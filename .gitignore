@@ -2,6 +2,7 @@
 .secrets
 .env
 .envrc
+claude.resume
 
 # --- Monero wallet — NEVER commit; contains spend keys ---
 wallet/
