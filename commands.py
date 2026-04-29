@@ -1,0 +1,915 @@
+"""
+Command parser and dispatcher.
+
+Commands are matched against completed lines from the LLM output.
+Each handler returns a result string that gets injected back into
+the prompt as an observation.
+
+Interactive operations (/appendlines, /edit) use a PendingEdit state
+machine.  While pending is not None, the agent loop feeds each
+completed non-blank line to handle_pending_input() instead of
+treating it as a command.
+"""
+
+import json
+import re
+import shlex
+import subprocess
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+
+from memory import ContextMemory, PersistentMemory
+import web as web_mod
+import moltbook as mb_mod
+from apply_patch import (
+    apply_patch       as _apply_patch,
+    format_summary    as _format_patch_summary,
+    PatchError        as _PatchError,
+    BEGIN_PATCH, END_PATCH,
+)
+
+_WORK_DIR = Path(".").resolve()
+_FILE_PAGE_LINES = 60
+_frwx_enabled = False   # set True by CommandDispatcher when --frwx is active
+
+_PAGE_SIZE      = 6000  # chars per web page; ~1 500 tokens — fits comfortably in context
+_TG_HISTORY_N   = 30    # recent Telegram messages shown by bare /telegram
+
+_SHELL_TIMEOUT  = 30    # seconds before a shell command is killed
+_SHELL_MAX_OUT  = 4000  # chars; longer output gets head+tail trimmed
+_SHELL_HEAD     = 3000
+_SHELL_TAIL     = 800
+
+
+class CommandError(Exception):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Pending-edit state machine
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PendingEdit:
+    """
+    Tracks an in-progress interactive session.
+
+    mode      : "appendlines" | "edit_old" | "edit_new"
+    file_path : path relative to _WORK_DIR
+    old_lines : accumulated during "edit_old" phase
+    new_lines : accumulated during "edit_new" phase
+    """
+    mode:      str
+    file_path: str
+    old_lines: list[str] = field(default_factory=list)
+    new_lines: list[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Paginated file reader
+# ---------------------------------------------------------------------------
+
+class FileReader:
+    def __init__(self):
+        self._files: dict[str, tuple[list[str], int]] = {}
+
+    def read(self, path_str: str) -> str:
+        p = _safe_path(path_str)
+        if not p.exists():
+            return f"[file] Not found: {path_str}"
+        if not p.is_file():
+            return f"[file] Not a file: {path_str}"
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+        self._files[path_str] = (lines, 0)
+        return self._render(path_str)
+
+    def page_up(self, path_str: str) -> str:
+        if path_str not in self._files:
+            return f"[file] Not open: {path_str} — use /read first"
+        lines, page = self._files[path_str]
+        if page > 0:
+            self._files[path_str] = (lines, page - 1)
+        return self._render(path_str)
+
+    def page_down(self, path_str: str) -> str:
+        if path_str not in self._files:
+            return f"[file] Not open: {path_str} — use /read first"
+        lines, page = self._files[path_str]
+        total = max(1, -(-len(lines) // _FILE_PAGE_LINES))
+        if page < total - 1:
+            self._files[path_str] = (lines, page + 1)
+        return self._render(path_str)
+
+    def _render(self, path_str: str) -> str:
+        lines, page = self._files[path_str]
+        total = max(1, -(-len(lines) // _FILE_PAGE_LINES))
+        start = page * _FILE_PAGE_LINES
+        chunk = lines[start : start + _FILE_PAGE_LINES]
+        header = f"[file:{path_str} page {page + 1}/{total}]\n"
+        numbered = "".join(
+            f"{start + i + 1:4d}: {line}" for i, line in enumerate(chunk)
+        )
+        return header + numbered
+
+
+def _safe_path(path_str: str) -> Path:
+    p = (Path(".").resolve() / path_str).resolve()
+    if not _frwx_enabled and not str(p).startswith(str(_WORK_DIR)):
+        raise CommandError(f"[file] Access denied (outside working directory): {path_str}")
+    return p
+
+
+def _read_lines(path_str: str) -> list[str]:
+    """Read a file as lines; return [] if it doesn't exist yet."""
+    p = _safe_path(path_str)
+    if not p.exists():
+        return []
+    return p.read_text(encoding="utf-8", errors="replace").splitlines()
+
+
+def _write_lines(path_str: str, lines: list[str]) -> None:
+    p = _safe_path(path_str)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher
+# ---------------------------------------------------------------------------
+
+_TG_COOLDOWN = 60  # seconds between /telegram commands
+
+class CommandDispatcher:
+    def __init__(
+        self,
+        cmem: ContextMemory,
+        pmem: PersistentMemory,
+        frwx: bool = False,
+        telegram: bool = False,
+        monero: bool = False,
+    ):
+        global _frwx_enabled
+        _frwx_enabled = frwx
+        self._frwx = frwx
+        self.cmem = cmem
+        self.pmem = pmem
+        self._file_reader = FileReader()
+        self.pending: PendingEdit | None = None
+        self._last_tg_text: str = ""
+        self._last_tg_time: float = 0.0
+        self._page_buf:    list[str] = []  # pages of the last /search or /goto result
+        self._page_cur:    int = 0
+
+        if telegram:
+            import telegram_handler as _tg_mod
+            self._tg = _tg_mod
+        else:
+            self._tg = None
+
+        if monero:
+            import monero_wallet as _xmr_mod
+            self._xmr = _xmr_mod
+        else:
+            self._xmr = None
+
+    # -----------------------------------------------------------------------
+    # Normal command dispatch
+    # -----------------------------------------------------------------------
+
+    def dispatch(self, line: str) -> str | None:
+        """
+        Try to parse *line* as a command.
+        Returns the result string, or None if the line isn't a command.
+        /appendlines and /edit set self.pending and return a prompt string.
+        """
+        stripped = line.strip()
+        if stripped.startswith("$ ") or (stripped.startswith("# ") and not stripped.startswith("##")):
+            if not self._frwx:
+                return "[error] Shell access requires --frwx flag."
+            root = stripped.startswith("# ")
+            cmd_str = stripped[2:].strip()
+            return self._shell(cmd_str, root=root)
+        if not stripped.startswith("/"):
+            return None
+        try:
+            return self._route(stripped)
+        except CommandError as e:
+            return str(e)
+        except Exception as e:
+            return f"[error] {type(e).__name__}: {e}"
+
+    def _route(self, line: str) -> str:
+        try:
+            parts = shlex.split(line)
+        except ValueError:
+            parts = line.split()
+
+        cmd  = parts[0].lower()
+        args = parts[1:]
+
+        if cmd == "/cmem":         return self._cmem(args)
+        # '/cm' is a single BPE token in Qwen3's vocabulary.  The model often
+        # emits it alone when it intends '/cmem r 1' — the ChatML end-of-turn
+        # token (<|im_end|>) wins the probability race immediately after '/cm',
+        # so generation stops before 'em r 1' can be produced.  Alias it.
+        if cmd == "/cm":
+            if args:
+                # /cm w|r|d ... — pass subcommands straight through
+                return self._cmem(args)
+            # Bare /cm — shorthand for reading line 1
+            result = self._cmem(["r", "1"])
+            return f"[cmem] (alias /cm → /cmem r 1) {result}"
+        if cmd in ("/pmem", "/pgup", "/pgdown"):
+                                   return self._pmem(cmd, args)
+        if cmd in ("/pm", "/pmew"):
+            # /pm  — shorthand for /pmem r
+            # /pmew — model often emits this instead of "/pmem w" (BPE fusion)
+            if args:
+                return self._pmem("/pmem", args)
+            return self._pmem("/pmem", ["r"])
+        if cmd == "/dir":          return self._dir(args)
+        if cmd == "/read":         return self._read(args)
+        if cmd == "/append":       return self._append(args)
+        if cmd == "/appendlines":  return self._begin_appendlines(args)
+        if cmd == "/edit":         return self._begin_edit(args)
+        if cmd == "/patch":        return self._begin_patch(args)
+        if cmd == "/dellines":     return self._dellines(args)
+        if cmd == "/del":          return self._del(args)
+        if cmd == "/search":       return self._search(args)
+        if cmd == "/goto":         return self._goto(args)
+        if cmd == "/next":         return self._next()
+        if cmd == "/back":         return self._back()
+        if cmd == "/mb":           return self._mb(args)
+        if cmd == "/telegram":     return self._telegram(args)
+        if cmd == "/wallet":       return self._wallet(args)
+
+        return f"[error] Unknown command: {cmd}"
+
+    # -----------------------------------------------------------------------
+    # Pending-edit input handler
+    # -----------------------------------------------------------------------
+
+    def handle_pending_input(self, text: str) -> str:
+        """
+        Called by the agent loop when self.pending is set.
+        *text* is a single completed line from the model with leading
+        whitespace preserved (only trailing newlines stripped) — handlers
+        that look for keywords (done, ---, *** End Patch) call .strip().
+        Returns the next observation string.
+        Clears self.pending when the session ends.
+        """
+        if self.pending is None:
+            return "[error] handle_pending_input called with no pending state"
+
+        if self.pending.mode == "appendlines":
+            return self._appendlines_input(text)
+        if self.pending.mode == "patch":
+            return self._patch_input(text)
+        if self.pending.mode in ("edit_old", "edit_new"):
+            return self._edit_input(text)
+
+        self.pending = None
+        return "[error] Unknown pending mode"
+
+    # -----------------------------------------------------------------------
+    # Context memory
+    # -----------------------------------------------------------------------
+
+    def _cmem(self, args: list[str]) -> str:
+        if not args:
+            raise CommandError("[cmem] Usage: /cmem r|w|d <line> [text]")
+        sub = args[0].lower()
+        if sub == "r":
+            return self.cmem.read(_int_arg(args, 1, "/cmem r <line>"))
+        if sub == "w":
+            line = _int_arg(args, 1, "/cmem w <line> <text>")
+            return self.cmem.write(line, " ".join(args[2:]))
+        if sub == "d":
+            return self.cmem.delete(_int_arg(args, 1, "/cmem d <line>"))
+        raise CommandError(f"[cmem] Unknown subcommand: {sub}")
+
+    # -----------------------------------------------------------------------
+    # Persistent memory
+    # -----------------------------------------------------------------------
+
+    def _pmem(self, cmd: str, args: list[str]) -> str:
+        if cmd == "/pgup":   return self.pmem.page_up()
+        if cmd == "/pgdown": return self.pmem.page_down()
+        if not args:
+            raise CommandError("[pmem] Usage: /pmem r | /pmem w <text> | /pmem d <line>")
+        sub = args[0].lower()
+        if sub == "r": return self.pmem.read_page()
+        if sub == "w":
+            text = " ".join(args[1:])
+            if len(text) > 300:
+                text = text[:297] + "…"
+                result = self.pmem.append(text)
+                return result + "\n[pmem] Note: entry was truncated to 300 chars. Use shorter entries."
+            return self.pmem.append(text)
+        if sub == "d": return self.pmem.delete(_int_arg(args, 1, "/pmem d <line>"))
+        raise CommandError(f"[pmem] Unknown subcommand: {sub}")
+
+    # -----------------------------------------------------------------------
+    # Files
+    # -----------------------------------------------------------------------
+
+    def _dir(self, args: list[str]) -> str:
+        path_str = args[0] if args else "."
+        p = _safe_path(path_str)
+        if not p.exists():   return f"[dir] Not found: {path_str}"
+        if not p.is_dir():   return f"[dir] Not a directory: {path_str}"
+        entries = sorted(p.iterdir(), key=lambda x: (x.is_file(), x.name))
+        lines = []
+        for e in entries:
+            kind = "" if e.is_dir() else "  "
+            size = f"  {e.stat().st_size:>10} B" if e.is_file() else ""
+            lines.append(f"  {kind}{e.name}{size}")
+        return f"[dir:{path_str}]\n" + "\n".join(lines)
+
+    def _read(self, args: list[str]) -> str:
+        if not args:
+            raise CommandError("[file] Usage: /read <file>")
+        return self._file_reader.read(args[0])
+
+    def _append(self, args: list[str]) -> str:
+        if len(args) < 2:
+            raise CommandError("[file] Usage: /append <file> <content>")
+        path_str, content = args[0], " ".join(args[1:])
+        p = _safe_path(path_str)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(content + "\n")
+        return f"[file] Appended to: {path_str}"
+
+    def _begin_appendlines(self, args: list[str]) -> str:
+        """
+        /appendlines <file>  — append multiple lines interactively.
+
+        The agent types one line of content per response; each is appended
+        immediately.  Type 'done' to finish.  Designed for writing structured
+        multi-line entries (e.g. the events.md format).
+        """
+        if not args:
+            raise CommandError("[file] Usage: /appendlines <file>")
+        path_str = args[0]
+        _safe_path(path_str)  # validate path before setting pending
+        self.pending = PendingEdit(mode="appendlines", file_path=path_str)
+        return (
+            f"[appendlines:{path_str}] Ready. Write all your lines now "
+            "(the system reads each line as you go). "
+            "Type 'done' alone on its own line when finished."
+        )
+
+    def _appendlines_input(self, text: str) -> str:
+        p = self.pending
+        assert p is not None
+        if text.strip().lower() in ("done", "exit", "quit"):
+            self.pending = None
+            return f"[appendlines:{p.file_path}] Done."
+        path_obj = _safe_path(p.file_path)
+        path_obj.parent.mkdir(parents=True, exist_ok=True)
+        with path_obj.open("a", encoding="utf-8") as f:
+            f.write(text + "\n")
+        return f"[appendlines:{p.file_path}] Appended. Next line (or 'done'):"
+
+    def _begin_edit(self, args: list[str]) -> str:
+        """
+        /edit <file>  — find-and-replace (or delete) a block of text.
+
+        Write old text, then --- alone on its own line, then replacement text,
+        then done alone on its own line.  Leave replacement empty (--- then done
+        immediately) to delete the old text.  Use /read first to copy exact text.
+        """
+        if not args:
+            raise CommandError("[file] Usage: /edit <file>")
+        path_str = args[0]
+        p = _safe_path(path_str)
+        if not p.exists():
+            return f"[file] Not found: {path_str}"
+        self.pending = PendingEdit(mode="edit_old", file_path=path_str)
+        return (
+            f"[edit:{path_str}] Write the exact text to find, then --- alone,\n"
+            f"then replacement text, then done alone (empty replacement = delete):"
+        )
+
+    def _edit_input(self, text: str) -> str:
+        p = self.pending
+        assert p is not None
+
+        if p.mode == "edit_old":
+            if text.strip() == "---":
+                if not p.old_lines:
+                    self.pending = None
+                    return "[edit] Cancelled — no text to find."
+                p.mode = "edit_new"
+                return f"[edit:{p.file_path}] Separator. Write replacement, then done:"
+            p.old_lines.append(text)
+            return f"[edit:{p.file_path}] Line {len(p.old_lines)} recorded."
+
+        if p.mode == "edit_new":
+            if text.strip().lower() == "done":
+                return self._apply_edit()
+            p.new_lines.append(text)
+            return f"[edit:{p.file_path}] Replacement line {len(p.new_lines)} recorded."
+
+        self.pending = None
+        return "[error] Unexpected edit state."
+
+    def _apply_edit(self) -> str:
+        p = self.pending
+        assert p is not None
+        self.pending = None
+
+        file_path = _safe_path(p.file_path)
+        content   = file_path.read_text(encoding="utf-8", errors="replace")
+
+        old_text = "\n".join(p.old_lines)
+        new_text = "\n".join(p.new_lines)
+
+        # Prefer matching with a trailing newline so that deleting a block of
+        # lines also consumes the line terminator (avoids leaving a blank line).
+        if old_text + "\n" in content:
+            replacement = (new_text + "\n") if new_text else ""
+            updated = content.replace(old_text + "\n", replacement, 1)
+        elif old_text in content:
+            updated = content.replace(old_text, new_text, 1)
+        else:
+            return (
+                f"[edit:{p.file_path}] ERROR — text not found in file.\n"
+                "Make sure you copied the exact text from /read output (including spacing).\n"
+                "Use /edit again with the correct text."
+            )
+
+        file_path.write_text(updated, encoding="utf-8")
+
+        if p.new_lines:
+            return f"[edit:{p.file_path}] Done. Replaced {len(p.old_lines)} line(s) with {len(p.new_lines)} line(s)."
+        else:
+            return f"[edit:{p.file_path}] Done. Deleted {len(p.old_lines)} line(s)."
+
+    # -----------------------------------------------------------------------
+    # Multi-file patch (apply_patch format)
+    # -----------------------------------------------------------------------
+
+    def _begin_patch(self, args: list[str]) -> str:
+        """/patch — apply a multi-file patch in apply_patch format."""
+        # old_lines is reused as the line buffer; file_path is unused for /patch.
+        self.pending = PendingEdit(mode="patch", file_path="")
+        return (
+            "[patch] Write the full patch starting with '*** Begin Patch'.\n"
+            "Use *** Add File: / *** Update File: / *** Delete File: for ops.\n"
+            "Inside Update hunks: '+' adds, '-' removes, ' ' (space) is context.\n"
+            "Patch is applied automatically when '*** End Patch' is reached."
+        )
+
+    def _patch_input(self, text: str) -> str:
+        p = self.pending
+        assert p is not None
+        p.old_lines.append(text)
+
+        if text.strip() != END_PATCH:
+            return ""  # batch mode — result is discarded
+
+        # End-of-patch reached — locate the begin marker and apply.
+        buf = p.old_lines
+        try:
+            begin_idx = next(
+                i for i, line in enumerate(buf) if line.strip() == BEGIN_PATCH
+            )
+        except StopIteration:
+            self.pending = None
+            return (
+                "[patch] Error: '*** Begin Patch' marker not found. "
+                "Reissue /patch and start the patch with '*** Begin Patch'."
+            )
+
+        full_patch = "\n".join(buf[begin_idx:])
+        self.pending = None
+        try:
+            result = _apply_patch(full_patch, safe_path=_safe_path)
+        except _PatchError as e:
+            return f"[patch] Error: {e}"
+        except FileNotFoundError as e:
+            return f"[patch] Error: file not found — {e}"
+        return _format_patch_summary(result)
+
+    def _dellines(self, args: list[str]) -> str:
+        """
+        /dellines <file> <N>      delete line N
+        /dellines <file> <N>-<M>  delete lines N through M (inclusive)
+        """
+        if len(args) < 2:
+            raise CommandError("[file] Usage: /dellines <file> <N> or <N>-<M>")
+        path_str  = args[0]
+        range_str = args[1]
+
+        if "-" in range_str:
+            parts = range_str.split("-", 1)
+            try:
+                n1, n2 = int(parts[0]), int(parts[1])
+            except ValueError:
+                raise CommandError(f"[file] Invalid range: {range_str!r}. Use N or N-M.")
+        else:
+            try:
+                n1 = n2 = int(range_str)
+            except ValueError:
+                raise CommandError(f"[file] Invalid line number: {range_str!r}.")
+
+        lines = _read_lines(path_str)
+        total = len(lines)
+
+        if n1 < 1 or n2 > total or n1 > n2:
+            return (
+                f"[file] Line range {n1}–{n2} is out of bounds "
+                f"(file has {total} line(s)). Use /read to check."
+            )
+
+        del lines[n1 - 1 : n2]
+        _write_lines(path_str, lines)
+        count = n2 - n1 + 1
+        return f"[file] Deleted {count} line(s) ({n1}–{n2}) from {path_str}. File now has {len(lines)} line(s)."
+
+    def _del(self, args: list[str]) -> str:
+        if not args:
+            raise CommandError("[file] Usage: /del <file>")
+        p = _safe_path(args[0])
+        if not p.exists():
+            return f"[file] Not found: {args[0]}"
+        p.unlink()
+        return f"[file] Deleted: {args[0]}"
+
+    # -----------------------------------------------------------------------
+    # Web
+    # -----------------------------------------------------------------------
+
+    # -----------------------------------------------------------------------
+    # Moltbook
+    # -----------------------------------------------------------------------
+
+    def _mb(self, args: list[str]) -> str:
+        """
+        /mb <subcommand> [args...]
+
+        Subcommands:
+          register <name> <description>   — register a new agent account
+          me                              — show own profile
+          home                            — dashboard (start here each check-in)
+          feed [hot|new|top]              — browse the feed
+          read <post_id>                  — read a post and its comments
+          post <submolt> <title> [body]   — create a post (handles verification)
+          comment <post_id> <text>        — comment on a post
+          reply <post_id> <cmt_id> <txt>  — reply to a comment
+          upvote <post_id>                — upvote a post
+          upvote-comment <cmt_id>         — upvote a comment
+          verify <code> <answer>          — complete a verification challenge
+          search <query>                  — semantic search
+          dm                              — check DM activity
+          dm list                         — list active conversations
+          dm read <conv_id>               — read a conversation (marks as read)
+          dm send <conv_id> <message>     — send a DM
+          dm approve <conv_id>            — approve a DM request
+          dm reject <conv_id>             — reject a DM request
+        """
+        if not args:
+            return "[mb] Usage: /mb <subcommand> — try /mb home to start."
+        sub  = args[0].lower()
+        rest = args[1:]
+
+        try:
+            if sub == "register":
+                if len(rest) < 2:
+                    return "[mb] Usage: /mb register <name> <description>"
+                return mb_mod.register(rest[0], " ".join(rest[1:]))
+
+            if sub == "me":
+                return mb_mod.me()
+
+            if sub == "home":
+                return mb_mod.home()
+
+            if sub == "feed":
+                # /mb feed [sort] [submolt=<name>] [next=<cursor>] [filter=following]
+                sort     = "new"
+                submolt  = ""
+                cursor   = ""
+                filter_  = ""
+                for tok in rest:
+                    if tok.startswith("next="):
+                        cursor = tok[5:]
+                    elif tok.startswith("submolt="):
+                        submolt = tok[8:]
+                    elif tok.startswith("filter="):
+                        filter_ = tok[7:]
+                    elif tok in ("hot", "new", "top", "rising"):
+                        sort = tok
+                return mb_mod.feed(sort=sort, cursor=cursor, submolt=submolt, filter_=filter_)
+
+            if sub == "read":
+                if not rest:
+                    return "[mb] Usage: /mb read <post_id>"
+                return mb_mod.read_post(rest[0])
+
+            if sub == "submolts":
+                return mb_mod.list_submolts()
+
+            if sub == "post":
+                if len(rest) < 2:
+                    return (
+                        '[mb] Usage: /mb post <submolt> <title> | <body>\n'
+                        '  Title-only:  /mb post m/general My Title\n'
+                        '  With body:   /mb post m/general My Title | Body text here.'
+                    )
+                submolt = rest[0]
+                title_and_body = rest[1:]
+                if "|" in title_and_body:
+                    pipe = title_and_body.index("|")
+                    title = " ".join(title_and_body[:pipe])
+                    body  = " ".join(title_and_body[pipe + 1:])
+                else:
+                    title = " ".join(title_and_body)
+                    body  = ""
+                return mb_mod.create_post(submolt, title, body)
+
+            if sub == "comment":
+                if len(rest) < 2:
+                    return "[mb] Usage: /mb comment <post_id> <text>"
+                return mb_mod.comment(rest[0], " ".join(rest[1:]))
+
+            if sub == "reply":
+                if len(rest) < 3:
+                    return "[mb] Usage: /mb reply <post_id> <comment_id> <text>"
+                return mb_mod.comment(rest[0], " ".join(rest[2:]), parent_id=rest[1])
+
+            if sub == "upvote":
+                if not rest:
+                    return "[mb] Usage: /mb upvote <post_id>"
+                return mb_mod.upvote(rest[0])
+
+            if sub == "upvote-comment":
+                if not rest:
+                    return "[mb] Usage: /mb upvote-comment <comment_id>"
+                return mb_mod.upvote_comment(rest[0])
+
+            if sub == "follow":
+                if not rest:
+                    return "[mb] Usage: /mb follow <username>"
+                return mb_mod.follow(rest[0])
+
+            if sub == "unfollow":
+                if not rest:
+                    return "[mb] Usage: /mb unfollow <username>"
+                return mb_mod.unfollow(rest[0])
+
+            if sub == "subscribe":
+                if not rest:
+                    return "[mb] Usage: /mb subscribe <submolt>"
+                return mb_mod.subscribe(rest[0])
+
+            if sub == "unsubscribe":
+                if not rest:
+                    return "[mb] Usage: /mb unsubscribe <submolt>"
+                return mb_mod.unsubscribe(rest[0])
+
+            if sub == "verify":
+                if len(rest) < 2:
+                    return "[mb] Usage: /mb verify <code> <answer>"
+                return mb_mod.verify(rest[0], rest[1])
+
+            if sub == "search":
+                if not rest:
+                    return "[mb] Usage: /mb search <query>"
+                return mb_mod.search(" ".join(rest))
+
+            if sub == "dm":
+                if not rest:
+                    return mb_mod.dm_check()
+                dsub = rest[0].lower()
+                if dsub == "list":
+                    return mb_mod.dm_list()
+                if dsub == "read":
+                    if len(rest) < 2:
+                        return "[mb] Usage: /mb dm read <conv_id>"
+                    return mb_mod.dm_read(rest[1])
+                if dsub == "send":
+                    if len(rest) < 3:
+                        return "[mb] Usage: /mb dm send <conv_id> <message>"
+                    return mb_mod.dm_send(rest[1], " ".join(rest[2:]))
+                if dsub == "approve":
+                    if len(rest) < 2:
+                        return "[mb] Usage: /mb dm approve <conv_id>"
+                    return mb_mod.dm_approve(rest[1])
+                if dsub == "reject":
+                    if len(rest) < 2:
+                        return "[mb] Usage: /mb dm reject <conv_id>"
+                    return mb_mod.dm_reject(rest[1])
+                return f"[mb] Unknown dm subcommand: {dsub}"
+
+            return f"[mb] Unknown subcommand: {sub}. Try /mb home."
+
+        except mb_mod.MoltbookError as e:
+            return f"[mb] Error: {e}"
+        except Exception as e:
+            return f"[mb] Unexpected error: {type(e).__name__}: {e}"
+
+    # -----------------------------------------------------------------------
+    # Telegram
+    # -----------------------------------------------------------------------
+
+    def _telegram_history(self) -> str:
+        from config import TELEGRAM_HISTORY
+        path = Path(TELEGRAM_HISTORY)
+        if not path.exists() or path.stat().st_size == 0:
+            return "[telegram] No conversation history yet."
+        entries: list[dict] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        if not entries:
+            return "[telegram] No messages in history."
+        recent = entries[-_TG_HISTORY_N:]
+        lines = [f"[telegram] Last {len(recent)} messages:"]
+        for e in recent:
+            direction = e.get("direction", "in")
+            sender    = e.get("from", "Foxo" if direction == "in" else "Boonie")
+            text      = e.get("text", "")
+            try:
+                dt = datetime.fromtimestamp(e.get("ts", 0)).strftime("%d %b %H:%M")
+            except Exception:
+                dt = "?"
+            arrow = "←" if direction == "in" else "→"
+            lines.append(f"  {dt} {arrow} {sender}: {text}")
+        return "\n".join(lines)
+
+    def _telegram(self, args: list[str]) -> str:
+        """
+        /telegram             — show recent conversation history
+        /telegram <message>   — send a message to Foxo
+        """
+        if self._tg is None:
+            return "[telegram] Telegram is not enabled — start the harness with --telegram / -tg."
+        if not args:
+            return self._telegram_history()
+        text = " ".join(args)
+        if text == self._last_tg_text:
+            return "[telegram] Duplicate — you already sent that exact message. Continue your task."
+        elapsed = time.time() - self._last_tg_time
+        if elapsed < _TG_COOLDOWN:
+            wait = int(_TG_COOLDOWN - elapsed)
+            return f"[telegram] Too soon — sent a message {int(elapsed)}s ago. Wait {wait}s, then continue your task."
+        result = self._tg.send(text)
+        self._last_tg_text = text
+        self._last_tg_time = time.time()
+        return result
+
+    # -----------------------------------------------------------------------
+    # Monero wallet
+    # -----------------------------------------------------------------------
+
+    def _wallet(self, args: list[str]) -> str:
+        if self._xmr is None:
+            return "[wallet] Monero wallet is not enabled — start the harness with --monero / -xmr."
+        sub = args[0].lower() if args else "help"
+        if sub == "address":
+            return self._xmr.address()
+        if sub == "balance":
+            return self._xmr.balance()
+        if sub == "send":
+            if len(args) < 3:
+                return "[wallet] Usage: /wallet send <address> <amount_xmr>"
+            return self._xmr.send(args[1], float(args[2]))
+        return "[wallet] Commands: /wallet address | /wallet balance | /wallet send <addr> <xmr>"
+
+    # -----------------------------------------------------------------------
+    # Web
+    # -----------------------------------------------------------------------
+
+    # -----------------------------------------------------------------------
+    # Web + pagination
+    # -----------------------------------------------------------------------
+
+    def _paginate(self, content: str) -> str:
+        """Split *content* into _PAGE_SIZE chunks; store all; return page 1."""
+        pages: list[str] = []
+        remaining = content
+        while remaining:
+            if len(remaining) <= _PAGE_SIZE:
+                pages.append(remaining)
+                break
+            chunk = remaining[:_PAGE_SIZE]
+            # Prefer splitting at a paragraph or line boundary
+            split = chunk.rfind("\n\n")
+            if split < _PAGE_SIZE // 2:
+                split = chunk.rfind("\n")
+            if split <= 0:
+                split = _PAGE_SIZE
+            pages.append(remaining[:split].rstrip())
+            remaining = remaining[split:].lstrip("\n")
+        self._page_buf = pages
+        self._page_cur = 0
+        return self._format_page(0)
+
+    def _format_page(self, idx: int) -> str:
+        n = len(self._page_buf)
+        text = self._page_buf[idx]
+        if n == 1:
+            return text
+        nav: list[str] = []
+        if idx > 0:
+            nav.append("/back")
+        if idx < n - 1:
+            nav.append("/next")
+        suffix = " — " + " · ".join(nav) if nav else ""
+        return text + f"\n\n[Page {idx + 1}/{n}{suffix}]"
+
+    def _next(self) -> str:
+        if not self._page_buf:
+            return "[web] No page loaded — use /search or /goto first."
+        if self._page_cur >= len(self._page_buf) - 1:
+            return f"[web] End of content (page {len(self._page_buf)}/{len(self._page_buf)})."
+        self._page_cur += 1
+        return self._format_page(self._page_cur)
+
+    def _back(self) -> str:
+        if not self._page_buf:
+            return "[web] No page loaded."
+        if self._page_cur <= 0:
+            return "[web] Already at the first page."
+        self._page_cur -= 1
+        return self._format_page(self._page_cur)
+
+    def _search(self, args: list[str]) -> str:
+        query = " ".join(args).strip('"\'')
+        if not query:
+            raise CommandError('[web] Usage: /search "<query>"')
+        return self._paginate(web_mod.search(query))
+
+    def _goto(self, args: list[str]) -> str:
+        if not args:
+            raise CommandError("[web] Usage: /goto <url>")
+        return self._paginate(web_mod.fetch(args[0]))
+
+    def _shell(self, cmd_str: str, root: bool = False) -> str:
+        """Run a shell command (--frwx mode only). stdin closed, 30 s timeout."""
+        if not cmd_str:
+            return "[shell] Empty command."
+        # -n: non-interactive — fail immediately instead of prompting on /dev/tty
+        full_cmd = f"sudo -n {cmd_str}" if root else cmd_str
+        try:
+            proc = subprocess.run(
+                full_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=_SHELL_TIMEOUT,
+                stdin=subprocess.DEVNULL,
+            )
+            out = proc.stdout + proc.stderr
+            if not out.strip():
+                out = "(no output)"
+            elif len(out) > _SHELL_MAX_OUT:
+                omitted = len(out) - _SHELL_HEAD - _SHELL_TAIL
+                out = (
+                    out[:_SHELL_HEAD]
+                    + f"\n[…{omitted} chars omitted…]\n"
+                    + out[-_SHELL_TAIL:]
+                )
+            return f"[shell] exit={proc.returncode}\n{out}"
+        except subprocess.TimeoutExpired:
+            return f"[shell] Timeout after {_SHELL_TIMEOUT}s — command killed."
+        except Exception as e:
+            return f"[shell] Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _int_arg(args: list[str], idx: int, usage: str) -> int:
+    if idx >= len(args):
+        raise CommandError(f"[error] Expected integer argument. Usage: {usage}")
+    try:
+        return int(args[idx])
+    except ValueError:
+        raise CommandError(f"[error] Expected integer, got '{args[idx]}'. Usage: {usage}")
+
+
+_COMMAND_RE = re.compile(
+    r"^/(cmem|cm|pmem|pm|pgup|pgdown|dir|read|append|appendlines|edit|patch|dellines|del|search|goto|next|back|mb|telegram|wallet|bg|fg|jobs)\b",
+    re.IGNORECASE,
+)
+
+# "$ cmd" or "# cmd" — but not "## markdown header"
+_SHELL_CMD_RE = re.compile(r"^(\$ \S|# [^#\s])")
+
+def is_command_line(line: str, frwx: bool = False) -> bool:
+    s = line.strip()
+    if frwx and _SHELL_CMD_RE.match(s):
+        return True
+    return bool(_COMMAND_RE.match(s))

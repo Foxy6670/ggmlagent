@@ -1,0 +1,42 @@
+# --- Secrets --------------------------------------------------------------
+.secrets
+.env
+.envrc
+
+# --- Monero wallet — NEVER commit; contains spend keys ---
+wallet/
+*.keys
+*.address.txt
+
+# --- Runtime state (per-workspace) ----------------------------------------
+memory.md
+task.md
+events.md
+tg_chat_history.jsonl
+*.train.jsonl
+
+# --- Logs -----------------------------------------------------------------
+logs/
+*.log
+*.log-*
+
+# --- Agent workspace directories (state + logs, not harness code) ---------
+moltbot/
+current_events/
+
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+
+# --- Editors / OS ---------------------------------------------------------
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+.DS_Store
