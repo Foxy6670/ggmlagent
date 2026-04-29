@@ -14,8 +14,8 @@ import requests
 from typing import Callable, Iterator
 
 from config import (
-    KCPP_CHAT_URL, KCPP_ABORT_URL, KCPP_TOKENIZE_URL,
-    CHAT_DEFAULTS, ABORT_COOLDOWN,
+    KCPP_BASE_URL, KCPP_CHAT_URL, KCPP_ABORT_URL, KCPP_TOKENIZE_URL,
+    SOCKS5_PROXY, CHAT_DEFAULTS, ABORT_COOLDOWN,
 )
 
 
@@ -26,6 +26,10 @@ def _make_genkey() -> str:
 class KoboldClient:
     def __init__(self):
         self._session = requests.Session()
+        # Route through Tor when KCPP is reached over a .onion address —
+        # the hostname only resolves through the SOCKS5 proxy.
+        if ".onion" in KCPP_BASE_URL:
+            self._session.proxies = {"http": SOCKS5_PROXY, "https": SOCKS5_PROXY}
 
     # ------------------------------------------------------------------
     # Chat completions (primary generation path)

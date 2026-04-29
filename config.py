@@ -14,7 +14,9 @@ if _secrets_path.exists():
         _k, _, _v = _line.partition("=")
         os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
 
-KCPP_BASE_URL   = "http://localhost:5001"
+# KCPP — set KCPP_BASE_URL in .secrets to point at a remote .onion.
+# When the URL contains .onion, kcpp_client routes through SOCKS5h automatically.
+KCPP_BASE_URL   = os.environ.get("KCPP_BASE_URL", "http://localhost:5001")
 KCPP_CHAT_URL   = f"{KCPP_BASE_URL}/v1/chat/completions"
 KCPP_ABORT_URL  = f"{KCPP_BASE_URL}/api/extra/abort"
 KCPP_TOKENIZE_URL = f"{KCPP_BASE_URL}/api/extra/tokenize"
@@ -22,7 +24,9 @@ KCPP_TOKENIZE_URL = f"{KCPP_BASE_URL}/api/extra/tokenize"
 N_CTX = 32768
 MEMORY_TOKEN_BUDGET = 4096   # tokens reserved for context memory in system prompt
 
-SOCKS5_PROXY = "socks5://localhost:9050"
+# socks5h (vs socks5) — the 'h' resolves hostnames AT the proxy, which is
+# required for .onion addresses since they aren't in DNS.
+SOCKS5_PROXY = "socks5h://localhost:9050"
 
 PERSISTENT_MEMORY_FILE = "memory.md"
 TASK_FILE = "task.md"
