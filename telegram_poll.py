@@ -19,6 +19,7 @@ Finding your chat ID:
 """
 
 import json
+import socket
 import sys
 import time
 from pathlib import Path
@@ -31,7 +32,22 @@ CHAT_ID   = TELEGRAM_CHAT_ID
 INBOX     = Path(TELEGRAM_HISTORY)
 
 if not BOT_TOKEN:
-    print("ERROR: TELEGRAM_BOT_TOKEN not set in config.py or environment.")
+    print("ERROR: TELEGRAM_BOT_TOKEN not set in .secrets or environment.", file=sys.stderr)
+    sys.exit(1)
+
+# Preflight: Tor SOCKS5 must be reachable, otherwise every request explodes
+# with a 60-line urllib3/socks traceback.  Fail fast with a one-liner.
+_TOR_HOST, _TOR_PORT = "127.0.0.1", 9050
+try:
+    with socket.create_connection((_TOR_HOST, _TOR_PORT), timeout=2):
+        pass
+except OSError as e:
+    print(
+        f"ERROR: Tor SOCKS5 proxy not reachable at {_TOR_HOST}:{_TOR_PORT} ({e}).\n"
+        f"  Install:  sudo apt install tor\n"
+        f"  Start:    sudo systemctl enable --now tor",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
