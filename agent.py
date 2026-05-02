@@ -807,9 +807,11 @@ class Agent:
                     continue
                 if meta_cmd == "/tgin":
                     self._sim.inject_in(payload)
+                    self._log.system(f"Operator injected TG-in: {payload}")
                     print(f"{_GREEN}[teleop] Injected incoming TG: {payload}{_RESET}")
                 else:  # /tgout
                     self._sim.inject_out(payload)
+                    self._log.system(f"Operator injected TG-out: {payload}")
                     print(f"{_GREEN}[teleop] Injected outgoing TG: {payload}{_RESET}")
                 print(f"{_CYAN}[teleop]{_RESET} ", end="", flush=True)
                 continue
