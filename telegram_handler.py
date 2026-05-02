@@ -51,6 +51,22 @@ def send(message: str) -> str:
     return f"[telegram] Send failed: {data.get('description', str(data))}"
 
 
+def history() -> list[dict]:
+    """Return all chat history entries (in and out, oldest first)."""
+    if not _HISTORY.exists() or _HISTORY.stat().st_size == 0:
+        return []
+    out: list[dict] = []
+    for line in _HISTORY.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
 def drain_inbox() -> list[dict]:
     """
     Read unread incoming messages from tg_chat_history.jsonl.

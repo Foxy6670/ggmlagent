@@ -57,20 +57,42 @@ class Turn:
 
 
 class Agent:
-    def __init__(self, frwx: bool = False, telegram: bool = False, monero: bool = False):
+    def __init__(
+        self,
+        frwx: bool = False,
+        telegram: bool = False,
+        monero: bool = False,
+        simulate: bool = False,
+    ):
         self._frwx     = frwx
         self._client   = KoboldClient()
         self._cmem     = ContextMemory(self._client)
         self._pmem     = PersistentMemory()
-        self._dispatch      = CommandDispatcher(self._cmem, self._pmem, frwx=frwx,
-                                                telegram=telegram, monero=monero)
+
+        # Simulation: synthetic Telegram + intercepted Moltbook writes.
+        # Reads stay real (file I/O, web, MB reads) — see sim.py.
+        if simulate:
+            from sim import SimState
+            self._sim = SimState()
+        else:
+            self._sim = None
+
+        self._dispatch      = CommandDispatcher(
+            self._cmem, self._pmem,
+            frwx=frwx, telegram=telegram, monero=monero,
+            sim=self._sim,
+        )
         self._history:      list[Turn] = []
         self._log           = SessionLogger()
         self._pending_tg:   list[str] = []   # Telegram messages waiting to be shown
         self._loop_detector = CommandLoopDetector()
         self._job_mgr       = JobManager()
 
-        if telegram:
+        # When simulating, the sim doubles as the TG handler so drain_inbox()
+        # below pulls operator-injected messages instead of polling Tor.
+        if self._sim is not None:
+            self._tg = self._sim
+        elif telegram:
             import telegram_handler as _tg_mod
             self._tg = _tg_mod
         else:
@@ -731,12 +753,13 @@ class Agent:
             self._log.close()
 
     def _teleop_step(self):
-        # Drain Telegram inbox
-        for m in _tg.drain_inbox():
-            obs = f"[{m.get('from', 'Foxo')} @ Telegram]: {m.get('text', '')}"
-            print(f"\n{_GREEN}[telegram]{_RESET} {obs}", flush=True)
-            self._log.observation(obs)
-            self._pending_tg.append(obs)
+        # Drain Telegram inbox (real handler or sim, whichever is wired up).
+        if self._tg:
+            for m in self._tg.drain_inbox():
+                obs = f"[{m.get('from', 'Foxo')} @ Telegram]: {m.get('text', '')}"
+                print(f"\n{_GREEN}[telegram]{_RESET} {obs}", flush=True)
+                self._log.observation(obs)
+                self._pending_tg.append(obs)
 
         # Show current memory so the human sees what the model would see
         cmem = self._cmem.render()
@@ -770,6 +793,25 @@ class Agent:
                     print(f"{_CYAN}[teleop]{_RESET} ", end="", flush=True)
                 else:
                     turn.think_text += line + "\n"
+                continue
+
+            # Operator-only meta-commands. Not part of the agent's vocabulary —
+            # parsed before the command-line check so they don't go through
+            # dispatch and don't appear in training data.
+            if self._sim is not None and stripped.startswith(("/tgin ", "/tgout ")):
+                meta_cmd, _, payload = stripped.partition(" ")
+                payload = payload.strip()
+                if not payload:
+                    print(f"{_YELLOW}[teleop] {meta_cmd} requires a message body{_RESET}")
+                    print(f"{_CYAN}[teleop]{_RESET} ", end="", flush=True)
+                    continue
+                if meta_cmd == "/tgin":
+                    self._sim.inject_in(payload)
+                    print(f"{_GREEN}[teleop] Injected incoming TG: {payload}{_RESET}")
+                else:  # /tgout
+                    self._sim.inject_out(payload)
+                    print(f"{_GREEN}[teleop] Injected outgoing TG: {payload}{_RESET}")
+                print(f"{_CYAN}[teleop]{_RESET} ", end="", flush=True)
                 continue
 
             # Expect a command

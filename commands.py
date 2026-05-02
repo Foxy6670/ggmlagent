@@ -149,6 +149,7 @@ class CommandDispatcher:
         frwx: bool = False,
         telegram: bool = False,
         monero: bool = False,
+        sim=None,
     ):
         global _frwx_enabled
         _frwx_enabled = frwx
@@ -161,8 +162,14 @@ class CommandDispatcher:
         self._last_tg_time: float = 0.0
         self._page_buf:    list[str] = []  # pages of the last /search or /goto result
         self._page_cur:    int = 0
+        self._sim = sim
 
-        if telegram:
+        # When simulating, the sim object replaces the real Telegram handler —
+        # it duck-types `send`/`drain_inbox`/`history`. Moltbook write actions
+        # are intercepted in `_mb` rather than via a handler swap.
+        if sim is not None:
+            self._tg = sim
+        elif telegram:
             import telegram_handler as _tg_mod
             self._tg = _tg_mod
         else:
@@ -577,6 +584,18 @@ class CommandDispatcher:
         sub  = args[0].lower()
         rest = args[1:]
 
+        # Simulation: intercept write actions before they hit the real API.
+        # Reads (home/feed/read/search/me/dm-list/dm-read) pass through —
+        # the agent should see real Moltbook state when deciding what to do.
+        if self._sim is not None:
+            from sim import is_mb_write
+            dsub = rest[1].lower() if (sub == "dm" and len(rest) >= 2) else None
+            if is_mb_write(sub, dsub):
+                # For dm writes, the "args" the sim formats are the trailing
+                # tokens (conv_id, message, ...) — strip the dsub off the front.
+                payload = rest[1:] if dsub else rest
+                return self._sim.mb_write(sub, dsub, payload)
+
         try:
             if sub == "register":
                 if len(rest) < 2:
@@ -718,21 +737,9 @@ class CommandDispatcher:
     # -----------------------------------------------------------------------
 
     def _telegram_history(self) -> str:
-        from config import TELEGRAM_HISTORY
-        path = Path(TELEGRAM_HISTORY)
-        if not path.exists() or path.stat().st_size == 0:
-            return "[telegram] No conversation history yet."
-        entries: list[dict] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+        entries = self._tg.history() if self._tg else []
         if not entries:
-            return "[telegram] No messages in history."
+            return "[telegram] No conversation history yet."
         recent = entries[-_TG_HISTORY_N:]
         lines = [f"[telegram] Last {len(recent)} messages:"]
         for e in recent:

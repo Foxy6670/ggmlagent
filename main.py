@@ -36,7 +36,15 @@ def main():
         action="store_true",
         help="Enable Monero wallet (starts monero-wallet-rpc; requires monero package)",
     )
+    parser.add_argument(
+        "--simulate",
+        action="store_true",
+        help="Dry-run mode — Moltbook writes and Telegram (in/out) are intercepted "
+             "and synthesized; reads, files, and web stay real. Auto-on with --teleop.",
+    )
     args = parser.parse_args()
+    # Teleop implies simulate so dry-run scenarios don't commit real social actions.
+    simulate = args.simulate or args.teleop
 
     workspace = Path(args.workspace).expanduser().resolve()
     if not workspace.exists():
@@ -50,7 +58,7 @@ def main():
     print(f"Workspace: {workspace}")
 
     tg_proc = None
-    if args.telegram:
+    if args.telegram and not simulate:
         poll_script = Path(__file__).parent / "telegram_poll.py"
         tg_proc = subprocess.Popen(
             [sys.executable, str(poll_script)],
@@ -59,6 +67,10 @@ def main():
             stderr=None,
         )
         print(f"[main] telegram_poll started (pid={tg_proc.pid})")
+    elif simulate:
+        print("[main] Simulation mode — Telegram + Moltbook writes are synthetic.")
+        if args.telegram:
+            print("[main]   (--telegram ignored under --simulate; no poller started)")
     else:
         print("[main] Telegram disabled (pass --telegram / -tg to enable)")
 
@@ -80,7 +92,12 @@ def main():
     # Import after chdir so all relative paths resolve correctly
     from agent import Agent
     try:
-        agent = Agent(frwx=args.frwx, telegram=args.telegram, monero=args.monero)
+        agent = Agent(
+            frwx=args.frwx,
+            telegram=args.telegram,
+            monero=args.monero,
+            simulate=simulate,
+        )
         if args.teleop:
             agent.run_teleop()
         else:
