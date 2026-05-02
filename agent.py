@@ -782,17 +782,22 @@ class Agent:
             if not stripped:
                 continue
 
-            # Think block open/close
+            # Think block open/close. Mirror the live-agent path: log the
+            # markers and content as [THINK] so extract_training.py's parser
+            # can reconstruct the block boundaries.
             if not in_think and stripped == "<think>":
                 in_think = True
+                self._log.token("<think>\n", "THINK")
                 continue
 
             if in_think:
                 if stripped == "</think>":
                     in_think = False
+                    self._log.token("</think>\n", "THINK")
                     print(f"{_CYAN}[teleop]{_RESET} ", end="", flush=True)
                 else:
                     turn.think_text += line + "\n"
+                    self._log.token(line + "\n", "THINK")
                 continue
 
             # Operator-only meta-commands. Not part of the agent's vocabulary —
