@@ -111,8 +111,13 @@ def main():
                 print("[telegram_poll] Set TELEGRAM_CHAT_ID to accept messages from this chat.")
                 continue
 
-            # Write to chat history
-            entry = json.dumps({"direction": "in", "from": uname, "text": text, "chat_id": cid})
+            # Write to chat history. Use Telegram's authoritative `date` field
+            # (Unix timestamp); fall back to local clock if missing. Without
+            # this, every backlog message displays as "01 Jan 00:00" and the
+            # agent can't distinguish a 2-day-old instruction from a fresh one.
+            ts = msg.get("date") or time.time()
+            entry = json.dumps({"direction": "in", "from": uname, "text": text,
+                                "chat_id": cid, "ts": ts})
             INBOX.parent.mkdir(parents=True, exist_ok=True)
             with INBOX.open("a", encoding="utf-8") as f:
                 f.write(entry + "\n")
