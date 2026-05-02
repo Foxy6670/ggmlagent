@@ -35,6 +35,27 @@ _BAD_OBS_PREFIXES = (
 )
 
 _LINE_RE = re.compile(r"^\d{2}:\d{2}:\d{2}\.\d+ \[(\w+)\s*\] (.*)")
+_ABORT_RE = re.compile(r"\[SYS\s*\] Abort sent \(genkey=[A-Z0-9]+\), (.+?)\s*$")
+
+
+def _session_health(path: Path) -> tuple[int, int]:
+    """Return (executing_aborts, total_aborts) for a session log.
+
+    A session whose aborts are dominated by 'prose monologue', 'hallucinated
+    <|eoc|>', or 'observation-echo' is one where the model has lost the
+    plot — its turns are not safe training data even if individual lines
+    don't trip _BAD_OBS_PREFIXES. The ratio between these two numbers is
+    the cheapest health signal we have.
+    """
+    exec_n = total = 0
+    for raw in path.read_text(errors="replace").splitlines():
+        m = _ABORT_RE.search(raw)
+        if not m:
+            continue
+        total += 1
+        if "executing command" in m.group(1):
+            exec_n += 1
+    return exec_n, total
 
 
 @dataclass
@@ -148,6 +169,16 @@ def main():
         "--min-turns", type=int, default=3,
         help="minimum good turns to include a session (default: 3)",
     )
+    parser.add_argument(
+        "--min-exec-ratio", type=float, default=0.5,
+        help="drop sessions where executing-command aborts / total aborts < this "
+             "ratio (default: 0.5). Catches sessions where the model lost command "
+             "discipline even if individual turns look OK.",
+    )
+    parser.add_argument(
+        "--exclude", action="append", default=[],
+        help="skip sessions whose filename contains this substring; repeatable",
+    )
     args = parser.parse_args()
 
     if args.system:
@@ -165,6 +196,22 @@ def main():
         p = Path(log_path)
         if not p.exists() or p.suffix != ".log":
             continue
+
+        if any(pat in p.name for pat in args.exclude):
+            print(f"  skip {p.name} (excluded)", file=sys.stderr)
+            continue
+
+        exec_n, total_aborts = _session_health(p)
+        if total_aborts > 0:
+            ratio = exec_n / total_aborts
+            if ratio < args.min_exec_ratio:
+                print(
+                    f"  skip {p.name} (exec ratio {exec_n}/{total_aborts}="
+                    f"{ratio:.0%} < {args.min_exec_ratio:.0%})",
+                    file=sys.stderr,
+                )
+                continue
+
         turns = _parse_log(p)
         good = [t for t in turns if not _is_bad(t) and (t.agent.strip() or t.think.strip())]
         if len(good) < args.min_turns:
@@ -174,7 +221,8 @@ def main():
         out.write(json.dumps({"messages": messages}, ensure_ascii=False) + "\n")
         total_sessions += 1
         total_turns += len(good)
-        print(f"  {p.name}: {len(good)} good turns", file=sys.stderr)
+        ratio_str = f", exec {exec_n}/{total_aborts}" if total_aborts else ""
+        print(f"  {p.name}: {len(good)} good turns{ratio_str}", file=sys.stderr)
 
     if args.out != "-":
         out.close()
