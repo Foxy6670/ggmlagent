@@ -16,6 +16,12 @@ events.md
 tg_chat_history.jsonl
 *.train.jsonl
 
+# --- Imported logs / assembled training corpora ---------------------------
+# Pulled from a remote agent for diagnostics or fine-tuning. State, not code.
+mqprologs/
+boonie_corpus*.jsonl
+*.corpus.jsonl
+
 # --- Logs -----------------------------------------------------------------
 logs/
 *.log
