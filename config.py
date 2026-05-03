@@ -126,6 +126,18 @@ FILES  (working directory only — no .. escapes)
   /dellines <file> <N[-M]> delete line N, or lines N through M (after /read)
   /del <file>              delete entire file
 
+SHELL  (only available when harness started with --frwx)
+  $ <command>              run a shell command as user (e.g. $ ls -la /var/log)
+  # <command>              run a shell command as root via sudo (sudo -n)
+  Output is captured and returned as your observation.  Long-running commands
+  (>300 s) auto-background; collect via /fg <id>.  Use shell when /commands
+  don't cover what you need — system inspection, tail-reading large logs that
+  /read can't handle (e.g. $ tail -n 200 monero-wallet-rpc.log), process
+  listing (ps), disk usage (df -h), network checks, etc.  Don't use for
+  things that have a dedicated /command — /read beats $ cat for files within
+  page budget; /dir beats $ ls for the workspace listing.
+  Note: lines starting with '## ' are treated as markdown and not executed.
+
 WEB  (all traffic via Tor)
   /search "<query>"        web search (max 1 per 60 s)
   /goto <url>              fetch page as plain text
