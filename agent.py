@@ -549,11 +549,27 @@ class Agent:
 
             # Feed back an error for each dropped fragment so the model knows
             # the command was never executed and must be reissued in full.
+            # The detection ("starts with / but isn't a recognised /command")
+            # catches two distinct cases:
+            #   1) generation truly cut off mid-token (e.g. emitted '/cm' when
+            #      it meant '/cmem w 1 ...');
+            #   2) model wrote a complete-but-invalid /command name (e.g.
+            #      '/monero_start.sh', thinking a shell script is a /command).
+            # We can't distinguish these reliably, so the error names both
+            # possibilities and points at the shell escape hatch when --frwx
+            # is enabled (script-as-/command is the most common case there).
+            shell_hint = (
+                "  If you meant to run a shell script or system command, prefix "
+                "with $ for user (`$ ./monero_start.sh`) or # for root.\n"
+            ) if self._frwx else ""
             for partial in dropped:
                 obs = (
-                    f"[error] Command cut off mid-token: {partial!r}. "
-                    "Generation hit the token limit before the command was complete. "
-                    "Reissue the full command on its own line."
+                    f"[error] Unrecognised command: {partial!r}.\n"
+                    "  This either generated past the token limit before "
+                    "completing, or isn't a valid /command name.\n"
+                    + shell_hint +
+                    "  Check the COMMANDS section of your task prompt and "
+                    "reissue."
                 )
                 print(f"\n{_GREEN}[obs]{_RESET} {obs}", flush=True)
                 self._log.observation(obs)

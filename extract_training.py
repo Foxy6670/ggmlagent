@@ -31,7 +31,8 @@ _BAD_OBS_PREFIXES = (
     "[system] Your response was cut off by the token limit",
     "[system] Loop guard:",
     "[system] The <|eoc|>",
-    "[error] Command cut off mid-token",
+    "[error] Unrecognised command:",
+    "[error] Command cut off mid-token",  # legacy — pre-2026-05-03 wording
 )
 
 _LINE_RE = re.compile(r"^\d{2}:\d{2}:\d{2}\.\d+ \[(\w+)\s*\] (.*)")
