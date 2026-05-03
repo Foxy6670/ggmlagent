@@ -21,7 +21,11 @@ KCPP_CHAT_URL   = f"{KCPP_BASE_URL}/v1/chat/completions"
 KCPP_ABORT_URL  = f"{KCPP_BASE_URL}/api/extra/abort"
 KCPP_TOKENIZE_URL = f"{KCPP_BASE_URL}/api/extra/tokenize"
 
-N_CTX = 32768
+# Match the KCPP server's --contextsize.  Setting this larger than what
+# KCPP can accept causes silent server-side truncation: the prompt the
+# model actually sees gets its head or tail chopped without notification,
+# producing baffling context loss.  Update both sides together.
+N_CTX = 16384
 MEMORY_TOKEN_BUDGET = 4096   # tokens reserved for context memory in system prompt
 
 # socks5h (vs socks5) — the 'h' resolves hostnames AT the proxy, which is
