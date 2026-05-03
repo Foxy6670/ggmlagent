@@ -851,15 +851,23 @@ class Agent:
         """
         Build the chat message list from current state.
 
-        Cache strategy for KoboldCPP SmartCache:
-          - System prompt: 100% static → always cached.
-          - History observation messages: stored clean (no memory/timestamp
-            mixed in) → identical between turns → always cached.
-          - Memory + timestamp: injected as a DEDICATED final user message
-            that is never stored in history.  When memory changes, only this
-            one message (~300–800 tokens) needs reprocessing.  When memory is
-            stable, the slot matches through the entire history and only new
-            content beyond the saved slot is processed.
+        Cache strategy (RoPE-aware) for KoboldCPP SmartCache:
+          - System prompt: 100% static → cached forever.
+          - Scratchpad: placed RIGHT AFTER system, static between cmem
+            writes/deletes.  RoPE encodes absolute position into K/V, so
+            "same content at a different position" has different KV state.
+            Putting the scratchpad at the END (previous design) meant it
+            shifted position every turn as new history was appended,
+            breaking cache for everything that followed it.  Holding the
+            scratchpad at a fixed early position means its KV state stays
+            valid until cmem is actually modified.
+          - History: append-only between compactions → cache extends as
+            turns accumulate.  Compaction events invalidate from the
+            compacted-segment forward, by design.
+          - Pending TG + timestamp: ephemeral tail content.  Kept at the
+            very end so they only invalidate the trailing edge of the
+            cache (the about-to-generate position) rather than shifting
+            stable content downstream.
         """
         shell_section = (
             "\n\n════════════════════════════════════════\n"
@@ -881,6 +889,14 @@ class Agent:
 
         messages: list[dict] = [{"role": "system", "content": system_content}]
 
+        # Scratchpad — placed early so its position is stable between cmem
+        # changes.  Only invalidates the cache when cmem is actually modified.
+        cmem_display = self._cmem.render().strip() or "(empty)"
+        messages.append({
+            "role": "user",
+            "content": f"════ YOUR SCRATCHPAD (notes you wrote to yourself) ════\n{cmem_display}",
+        })
+
         if not self._history:
             messages.append({"role": "user", "content": "Begin. Read your task file first."})
         else:
@@ -898,16 +914,11 @@ class Agent:
         for tg in self._pending_tg:
             messages.append({"role": "user", "content": tg})
 
-        # Dedicated memory + timestamp message — always the final entry, never
-        # mixed into observation history.  Keeping it separate means history
-        # messages are stable across turns, maximising SmartCache prefix hits.
-        cmem         = self._cmem.render()
-        now          = datetime.now().strftime("%d %b %Y, %H:00")  # hourly — reduces cache invalidations
-        cmem_display = cmem.strip() or "(empty)"
-
-        mem_parts = [f"════ YOUR SCRATCHPAD (notes you wrote to yourself) ════\n{cmem_display}", f"[{now}]"]
-
-        messages.append({"role": "user", "content": "\n\n".join(mem_parts)})
+        # Timestamp — ephemeral, at the very end so it only invalidates the
+        # trailing-edge cache slot.  Hourly granularity to keep most turns
+        # within a single timestamp value.
+        now = datetime.now().strftime("%d %b %Y, %H:00")
+        messages.append({"role": "user", "content": f"[{now}]"})
 
         return messages
 
