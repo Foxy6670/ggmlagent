@@ -312,9 +312,9 @@ class CommandDispatcher:
             text = " ".join(args[1:])
             if len(text) > 300:
                 text = text[:297] + "…"
-                result = self.pmem.append(text)
+                result = self.pmem.write(text)
                 return result + "\n[pmem] Note: entry was truncated to 300 chars. Use shorter entries."
-            return self.pmem.append(text)
+            return self.pmem.write(text)
         if sub == "d": return self.pmem.delete(_int_arg(args, 1, "/pmem d <line>"))
         raise CommandError(f"[pmem] Unknown subcommand: {sub}")
 

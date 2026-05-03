@@ -12,7 +12,7 @@ from pathlib import Path
 from config import PERSISTENT_MEMORY_FILE, MEMORY_TOKEN_BUDGET
 from kcpp_client import KoboldClient
 
-_PAGE_LINES = 40  # lines per page when scrolling persistent memory
+_PAGE_LINES = 128  # lines per page when scrolling persistent memory
 
 
 class ContextMemory:
@@ -94,10 +94,23 @@ class PersistentMemory:
         )
         return header + numbered
 
-    def append(self, text: str) -> str:
-        with self._path.open("a", encoding="utf-8") as f:
-            f.write(text.rstrip("\n") + "\n")
-        return "[pmem] Line appended."
+    def write(self, text: str) -> str:
+        """
+        Prepend a new memory entry to the top of the file.
+
+        Memory access is recency-weighted — the agent almost always cares
+        more about "what did I learn recently?" than "what did I learn
+        first?". Storing newest-first means /pmem r shows current context
+        immediately rather than requiring /pgdown to find recent entries.
+        Older memories live below, reachable via /pgdown.
+
+        Costs O(N) per write (full-file rewrite), but the file is small
+        and writes are infrequent — not a perf concern.
+        """
+        existing = self._path.read_text(encoding="utf-8") if self._path.exists() else ""
+        new_line = text.rstrip("\n") + "\n"
+        self._path.write_text(new_line + existing, encoding="utf-8")
+        return "[pmem] Memory saved."
 
     def delete(self, line: int) -> str:
         lines = self._all_lines()

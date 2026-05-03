@@ -92,9 +92,10 @@ PERSISTENT MEMORY  (memory.md — survives restarts, read with /pmem r)
   if Foxo explicitly asks you to remember it, or if it is a lasting fact
   (a preference, a decision, a standing instruction).
   /pmem r                  show current page
-  /pmem w <text>           append a line (max ~300 chars; keep entries concise)
-  /pmem d <line>           delete line N
-  /pgup  /pgdown           scroll pages
+  /pmem w <text>           save a memory entry (max ~300 chars; keep entries concise)
+                           Newest entries appear at the top; older via /pgdown.
+  /pmem d <line>           delete line N (1 = newest, higher = older)
+  /pgup  /pgdown           /pgup → newer entries, /pgdown → older entries
 
 FILES  (working directory only — no .. escapes)
   /dir [path]              list directory
