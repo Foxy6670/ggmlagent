@@ -31,7 +31,7 @@ from apply_patch import (
 )
 
 _WORK_DIR = Path(".").resolve()
-_FILE_PAGE_LINES = 60
+_FILE_PAGE_LINES = 100
 _frwx_enabled = False   # set True by CommandDispatcher when --frwx is active
 
 _PAGE_SIZE      = 6000  # chars per web page; ~1 500 tokens — fits comfortably in context
