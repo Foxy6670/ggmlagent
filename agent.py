@@ -109,24 +109,54 @@ class Agent:
         _print_banner()
         self._log.system("=== SESSION START ===")
         _retry_delay = 30
+        failures = 0
+        # Backoff schedule 30,60,120,240,300,300,300,300,300,300 → ~32 min
+        # of total downtime before we exit. Watchdog or operator restarts.
+        MAX_FAILURES = 10
         try:
             while True:
+                err = None
+                kind = None
                 try:
                     self._step()
-                    _retry_delay = 30   # reset backoff on successful turn
-                except requests.exceptions.RequestException as e:
-                    msg = f"Connection error: {e} — retrying in {_retry_delay}s"
-                    print(f"\n{_YELLOW}[agent] {msg}{_RESET}", flush=True)
-                    self._log.system(msg)
-                    # Abort the orphaned generation so KCPP frees its slot
-                    # before we re-issue. Failure is non-fatal — abort()
-                    # already swallows exceptions internally.
+                    _retry_delay = 30
+                    failures = 0
+                    continue
+                except requests.exceptions.ConnectionError as e:
+                    err = e
+                    kind = "unreachable"
+                    # Server is gone — the genkey died with it, no abort to send.
+                    self._last_genkey = None
+                except requests.exceptions.Timeout as e:
+                    err = e
+                    kind = "timeout"
+                    # Server might still be alive; free its slot before retry.
                     if self._last_genkey:
                         if self._client.abort(self._last_genkey):
                             self._log.system(f"Abort sent (genkey={self._last_genkey}), retry-after-timeout")
                         self._last_genkey = None
-                    time.sleep(_retry_delay)
-                    _retry_delay = min(_retry_delay * 2, 300)  # cap at 5 min
+                except requests.exceptions.RequestException as e:
+                    err = e
+                    kind = "request error"
+                    if self._last_genkey:
+                        self._client.abort(self._last_genkey)
+                        self._last_genkey = None
+
+                failures += 1
+                msg = f"KCPP {kind} ({failures}/{MAX_FAILURES}): {err} — retrying in {_retry_delay}s"
+                colour = _RED if kind == "unreachable" else _YELLOW
+                print(f"\n{colour}[agent] {msg}{_RESET}", flush=True)
+                self._log.system(msg)
+                if failures >= MAX_FAILURES:
+                    fatal = (
+                        f"KCPP {kind} for {MAX_FAILURES} consecutive attempts. "
+                        "Exiting so a watchdog or operator can restart."
+                    )
+                    print(f"\n{_RED}[agent] FATAL: {fatal}{_RESET}", flush=True)
+                    self._log.system(f"FATAL: {fatal}")
+                    return
+                time.sleep(_retry_delay)
+                _retry_delay = min(_retry_delay * 2, 300)
         except KeyboardInterrupt:
             print(f"\n{_YELLOW}[agent] Interrupted.{_RESET}")
             self._log.system("Session interrupted by user.")
