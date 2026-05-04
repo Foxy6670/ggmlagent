@@ -29,7 +29,7 @@ import requests
 
 from kcpp_client import KoboldClient, _make_genkey
 from memory import ContextMemory, PersistentMemory
-from commands import CommandDispatcher, is_command_line
+from commands import CommandDispatcher, is_command_line, is_shell_fence_open, is_fence_close
 from logger import SessionLogger
 from loop_detector import CommandLoopDetector
 from job_manager import JobManager
@@ -177,6 +177,11 @@ class Agent:
         blank_lines   = 0
         prose_lines   = 0   # non-blank content lines without a command
         hit_max_tokens = False
+        # Markdown shell fences (```bash / ``` ... ```) are accumulated and
+        # dispatched as a single `$ <cmd>` shell invocation when the closing
+        # fence arrives. Modern instruct models default to this syntax.
+        in_shell_block = False
+        shell_buffer: list[str] = []
 
         try:
             for token in token_iter:
@@ -240,6 +245,49 @@ class Agent:
                                 break
                             continue
                         blank_lines = 0
+
+                        # Markdown shell fences (```bash ... ```) are accumulated
+                        # and dispatched as one `$ <cmd>` invocation. Pending
+                        # batch modes (/appendlines, /edit, /patch) take priority
+                        # so shell-script content destined for a file isn't
+                        # intercepted as a command.
+                        if self._dispatch.pending is None:
+                            if in_shell_block:
+                                if is_fence_close(stripped):
+                                    cmd_str = "\n".join(shell_buffer).strip()
+                                    _trim_agent_text(turn, stripped)
+                                    in_shell_block = False
+                                    shell_buffer = []
+                                    if not cmd_str:
+                                        prose_lines = 0
+                                        continue
+                                    if not self._frwx:
+                                        self._client.abort(genkey)
+                                        aborted = True
+                                        self._log.system(f"Abort sent (genkey={genkey}), shell fence without --frwx")
+                                        obs = (
+                                            "[system] Shell access requires --frwx flag. "
+                                            "Use a /command instead."
+                                        )
+                                        self._record_obs(turn, "```", obs, command=False)
+                                        break
+                                    actual = "$ " + cmd_str
+                                    self._client.abort(genkey)
+                                    aborted = True
+                                    self._log.command(actual)
+                                    self._log.system(f"Abort sent (genkey={genkey}), executing fenced shell")
+                                    result = self._run_command(actual)
+                                    prose_lines = 0
+                                    self._record_obs(turn, actual, result, command=True)
+                                    break
+                                else:
+                                    shell_buffer.append(completed)
+                                    continue
+                            elif is_shell_fence_open(stripped) and self._frwx:
+                                _trim_agent_text(turn, stripped)
+                                in_shell_block = True
+                                shell_buffer = []
+                                continue
 
                         if self._dispatch.pending is not None:
                             # appendlines, edit phases, and patch are batch:
@@ -420,6 +468,26 @@ class Agent:
                 turn.observations.append(obs)
                 self._history.append(turn)
             return
+
+        # If the stream ended while still inside a fenced shell block, dispatch
+        # whatever we've accumulated. Cases: closing fence arrived without a
+        # trailing newline, or generation hit max_tokens before writing the
+        # close — in both cases the model clearly intended to run a command.
+        if not aborted and in_shell_block:
+            tail = cur_line.strip()
+            if tail and not is_fence_close(tail):
+                shell_buffer.append(cur_line.rstrip())
+            cmd_str = "\n".join(shell_buffer).strip()
+            in_shell_block = False
+            shell_buffer = []
+            cur_line = ""
+            if cmd_str and self._frwx:
+                actual = "$ " + cmd_str
+                self._log.command(actual)
+                self._log.system(f"Executing fenced shell at end-of-stream (genkey={genkey})")
+                result = self._run_command(actual)
+                self._record_obs(turn, actual, result, command=True)
+                aborted = True
 
         # Bug fix: if the stream ended without a trailing newline, the last
         # line never went through the newline-detection block.  Check it now.

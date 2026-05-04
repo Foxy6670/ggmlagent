@@ -5,6 +5,7 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -77,13 +78,39 @@ def main():
     xmr_proc = None
     if args.monero:
         xmr_script = Path(__file__).parent / "monero_start.sh"
+        xmr_log_path = workspace / "wallet_rpc.log"
         try:
+            xmr_log = open(xmr_log_path, "w")
             xmr_proc = subprocess.Popen(
                 ["bash", str(xmr_script)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=xmr_log,
+                stderr=subprocess.STDOUT,
             )
-            print(f"[main] monero-wallet-rpc started (pid={xmr_proc.pid})")
+            # Verify the daemon actually stays alive — previously we printed
+            # "started" even when the script crashed within milliseconds,
+            # leaving the agent with broken wallet state and no diagnostic.
+            time.sleep(2)
+            if xmr_proc.poll() is not None:
+                exit_code = xmr_proc.returncode
+                tail = ""
+                try:
+                    with open(xmr_log_path) as f:
+                        tail = f.read()[-800:]
+                except OSError:
+                    pass
+                print(
+                    f"[main] monero-wallet-rpc exited immediately "
+                    f"(exit={exit_code}, log: {xmr_log_path})",
+                    file=sys.stderr,
+                )
+                if tail.strip():
+                    print(f"[main] last lines:\n{tail}", file=sys.stderr)
+                xmr_proc = None
+            else:
+                print(
+                    f"[main] monero-wallet-rpc started "
+                    f"(pid={xmr_proc.pid}, log: {xmr_log_path})"
+                )
         except FileNotFoundError:
             print("[main] monero not installed — skipping wallet (apt install monero)")
     else:

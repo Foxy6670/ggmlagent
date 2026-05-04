@@ -915,8 +915,25 @@ _COMMAND_RE = re.compile(
 # "$ cmd" or "# cmd" — but not "## markdown header"
 _SHELL_CMD_RE = re.compile(r"^(\$ \S|# [^#\s])")
 
+# Markdown fenced code blocks. Modern instruct models default to ```bash / ```sh
+# for shell commands; treat those (and bare ``` with no language) as shell
+# containers. Other languages (```python, ```json, ...) stay prose for now.
+_SHELL_FENCE_OPEN_RE = re.compile(r"^```\s*(bash|sh|shell)?\s*$", re.IGNORECASE)
+_FENCE_CLOSE_RE      = re.compile(r"^```\s*$")
+
+
 def is_command_line(line: str, frwx: bool = False) -> bool:
     s = line.strip()
     if frwx and _SHELL_CMD_RE.match(s):
         return True
     return bool(_COMMAND_RE.match(s))
+
+
+def is_shell_fence_open(line: str) -> bool:
+    """A line that opens a shell-flavored markdown fence."""
+    return bool(_SHELL_FENCE_OPEN_RE.match(line.strip()))
+
+
+def is_fence_close(line: str) -> bool:
+    """A line that's a bare closing fence."""
+    return bool(_FENCE_CLOSE_RE.match(line.strip()))
