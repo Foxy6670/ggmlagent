@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 
 import requests
 
-from kcpp_client import KoboldClient
+from kcpp_client import KoboldClient, _make_genkey
 from memory import ContextMemory, PersistentMemory
 from commands import CommandDispatcher, is_command_line
 from logger import SessionLogger
@@ -87,6 +87,9 @@ class Agent:
         self._pending_tg:   list[str] = []   # Telegram messages waiting to be shown
         self._loop_detector = CommandLoopDetector()
         self._job_mgr       = JobManager()
+        # Tracked across retries so we can abort an orphaned generation
+        # (e.g. when chat_stream times out mid-prompt-eval) before re-issuing.
+        self._last_genkey: str | None = None
 
         # When simulating, the sim doubles as the TG handler so drain_inbox()
         # below pulls operator-injected messages instead of polling Tor.
@@ -115,6 +118,13 @@ class Agent:
                     msg = f"Connection error: {e} — retrying in {_retry_delay}s"
                     print(f"\n{_YELLOW}[agent] {msg}{_RESET}", flush=True)
                     self._log.system(msg)
+                    # Abort the orphaned generation so KCPP frees its slot
+                    # before we re-issue. Failure is non-fatal — abort()
+                    # already swallows exceptions internally.
+                    if self._last_genkey:
+                        if self._client.abort(self._last_genkey):
+                            self._log.system(f"Abort sent (genkey={self._last_genkey}), retry-after-timeout")
+                        self._last_genkey = None
                     time.sleep(_retry_delay)
                     _retry_delay = min(_retry_delay * 2, 300)  # cap at 5 min
         except KeyboardInterrupt:
@@ -144,8 +154,13 @@ class Agent:
 
         messages = self._build_and_trim_messages()
         finish_info: list[str] = []
+        # Generate genkey up-front and stash on self so a connection
+        # exception (caught in run()) can abort the orphaned generation.
+        genkey = _make_genkey()
+        self._last_genkey = genkey
         genkey, token_iter = self._client.chat_stream(
             messages,
+            genkey=genkey,
             log_raw=lambda line: self._log.system(f"[SSE] {line}"),
             finish_info=finish_info,
         )

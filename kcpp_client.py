@@ -67,7 +67,7 @@ class KoboldClient:
             KCPP_CHAT_URL,
             json=payload,
             stream=True,
-            timeout=180,            # 3 min — 32k token prompts can take ~2 min to process
+            timeout=600,            # 10 min — hybrid SSM models prompt-eval on CPU, can be slow on big context
         )
         resp.raise_for_status()
 
