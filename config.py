@@ -48,6 +48,10 @@ TELEGRAM_HISTORY   = "tg_chat_history.jsonl"  # all Telegram messages, in and ou
 MAX_RESPONSE_TOKENS = 4096
 ABORT_COOLDOWN = 0.5
 CMD_TIMEOUT = 300        # seconds before a hanging command is auto-backgrounded
+# Connect timeout is separate from read timeout — keep it short so a dead/busy
+# KCPP port fails fast rather than stalling for the full read window.
+# 30 s covers Tor circuit establishment; LAN failures are detected in <1 s.
+KCPP_CONNECT_TIMEOUT = 30
 
 # Parameters forwarded to /v1/chat/completions.
 # Note: KoboldCPP's chat endpoint does not reliably accept

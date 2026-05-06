@@ -15,7 +15,7 @@ from typing import Callable, Iterator
 
 from config import (
     KCPP_BASE_URL, KCPP_CHAT_URL, KCPP_ABORT_URL, KCPP_TOKENIZE_URL,
-    SOCKS5_PROXY, CHAT_DEFAULTS, ABORT_COOLDOWN,
+    SOCKS5_PROXY, CHAT_DEFAULTS, ABORT_COOLDOWN, KCPP_CONNECT_TIMEOUT,
 )
 
 
@@ -67,7 +67,7 @@ class KoboldClient:
             KCPP_CHAT_URL,
             json=payload,
             stream=True,
-            timeout=600,            # 10 min — hybrid SSM models prompt-eval on CPU, can be slow on big context
+            timeout=(KCPP_CONNECT_TIMEOUT, 600),  # connect fast-fail; 10 min read for slow CPU prompt-eval
         )
         resp.raise_for_status()
 
@@ -93,7 +93,7 @@ class KoboldClient:
         resp = self._session.post(
             KCPP_CHAT_URL,
             json=payload,
-            timeout=timeout,
+            timeout=(KCPP_CONNECT_TIMEOUT, timeout),
         )
         resp.raise_for_status()
         data = resp.json()
