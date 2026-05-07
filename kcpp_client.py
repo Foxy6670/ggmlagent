@@ -112,7 +112,7 @@ class KoboldClient:
         payload = {
             "prompt": prompt,
             "params": {
-                "max_length":         min(max_tokens, 512),  # Horde caps per-worker
+                "max_length":         min(max_tokens, 2048),  # Horde per-worker cap; workers may clamp further
                 "max_context_length": 4096,
                 "temperature":        overrides.get("temperature", CHAT_DEFAULTS.get("temperature", 0.7)),
                 "top_p":              overrides.get("top_p",        CHAT_DEFAULTS.get("top_p", 0.9)),
