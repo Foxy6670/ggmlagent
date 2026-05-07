@@ -46,6 +46,10 @@ TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_HISTORY   = "tg_chat_history.jsonl"  # all Telegram messages, in and out
 
 MAX_RESPONSE_TOKENS = 4096
+HORDE_API_KEY  = os.environ.get("HORDE_API_KEY", "0000000000")  # set in .secrets when using Horde
+# Comma-separated list of Horde model names to request, e.g. "koboldcpp/Qwen3-14B".
+# Empty = any available worker.
+HORDE_MODELS   = [m.strip() for m in os.environ.get("HORDE_MODELS", "").split(",") if m.strip()]
 ABORT_COOLDOWN = 0.5
 CMD_TIMEOUT = 300        # seconds before a hanging command is auto-backgrounded
 # Connect timeout is separate from read timeout — keep it short so a dead/busy

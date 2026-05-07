@@ -5,6 +5,9 @@ Uses /v1/chat/completions (OpenAI-compatible) so the model's instruct
 template is applied automatically — critical for instruction-tuned models.
 
 The raw /api/extra/generate/stream endpoint is kept only for tokenize/abort.
+
+When KCPP_BASE_URL is set to https://aihorde.net, requests are routed through
+the AI Horde async job API instead of a local KCPP instance.
 """
 
 import json
@@ -16,20 +19,40 @@ from typing import Callable, Iterator
 from config import (
     KCPP_BASE_URL, KCPP_CHAT_URL, KCPP_ABORT_URL, KCPP_TOKENIZE_URL,
     SOCKS5_PROXY, CHAT_DEFAULTS, ABORT_COOLDOWN, KCPP_CONNECT_TIMEOUT,
+    HORDE_API_KEY, HORDE_MODELS,
 )
+
+_USING_HORDE = "aihorde.net" in KCPP_BASE_URL
+
+_HORDE_ASYNC_URL  = "https://aihorde.net/api/v2/generate/text/async"
+_HORDE_CHECK_URL  = "https://aihorde.net/api/v2/generate/text/check/{}"
+_HORDE_STATUS_URL = "https://aihorde.net/api/v2/generate/text/status/{}"
+_HORDE_CANCEL_URL = "https://aihorde.net/api/v2/generate/text/status/{}"  # DELETE
 
 
 def _make_genkey() -> str:
     return "KCPP" + uuid.uuid4().hex[:4].upper()
 
 
+def _messages_to_chatml(messages: list[dict]) -> str:
+    """Format a messages list into a ChatML/Qwen3 prompt string."""
+    parts = []
+    for msg in messages:
+        role    = msg.get("role", "user")
+        content = msg.get("content", "")
+        parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
+    parts.append("<|im_start|>assistant\n")
+    return "\n".join(parts)
+
+
 class KoboldClient:
     def __init__(self):
         self._session = requests.Session()
-        # Route through Tor when KCPP is reached over a .onion address —
-        # the hostname only resolves through the SOCKS5 proxy.
         if ".onion" in KCPP_BASE_URL:
+            # .onion hostnames only resolve through the SOCKS5 proxy.
             self._session.proxies = {"http": SOCKS5_PROXY, "https": SOCKS5_PROXY}
+        if _USING_HORDE and HORDE_API_KEY:
+            self._session.headers.update({"apikey": HORDE_API_KEY})
 
     # ------------------------------------------------------------------
     # Chat completions (primary generation path)
@@ -46,15 +69,14 @@ class KoboldClient:
         """
         Stream a chat completion.
 
-        Returns (genkey, token_iterator).
-        genkey is passed as a KoboldCPP extension so the generation can
-        be aborted mid-stream via abort().
-
-        log_raw, if provided, is called with the repr() of every raw SSE
-        line received — useful for diagnosing unexpected stream endings.
+        Returns (genkey, token_iterator).  For KCPP, genkey enables mid-stream
+        abort.  For Horde, it carries the job ID so abort() can cancel the job.
         """
         if genkey is None:
             genkey = _make_genkey()
+
+        if _USING_HORDE:
+            return self._horde_chat_stream(messages, genkey, finish_info, **overrides)
 
         payload = {
             **CHAT_DEFAULTS,
@@ -73,6 +95,69 @@ class KoboldClient:
 
         return genkey, self._iter_chat_tokens(resp, log_raw=log_raw, finish_info=finish_info)
 
+    def _horde_chat_stream(
+        self,
+        messages: list[dict],
+        genkey: str,
+        finish_info: "list[str] | None" = None,
+        **overrides,
+    ) -> tuple[str, "Iterator[str]"]:
+        """
+        Submit to AI Horde, poll until done, return (job_id, word_iterator).
+        The iterator yields the response word-by-word to simulate streaming.
+        """
+        max_tokens = overrides.get("max_tokens", CHAT_DEFAULTS.get("max_tokens", 512))
+        prompt = _messages_to_chatml(messages)
+
+        payload = {
+            "prompt": prompt,
+            "params": {
+                "max_length":         min(max_tokens, 512),  # Horde caps per-worker
+                "max_context_length": 4096,
+                "temperature":        overrides.get("temperature", CHAT_DEFAULTS.get("temperature", 0.7)),
+                "top_p":              overrides.get("top_p",        CHAT_DEFAULTS.get("top_p", 0.9)),
+            },
+            "models": HORDE_MODELS if HORDE_MODELS else [],
+        }
+
+        resp = self._session.post(
+            _HORDE_ASYNC_URL,
+            json=payload,
+            timeout=(KCPP_CONNECT_TIMEOUT, 30),
+        )
+        resp.raise_for_status()
+        job_id = resp.json()["id"]
+
+        def _poll_and_stream() -> Iterator[str]:
+            check_url = _HORDE_CHECK_URL.format(job_id)
+            while True:
+                time.sleep(3)
+                check = self._session.get(check_url, timeout=(KCPP_CONNECT_TIMEOUT, 10))
+                check.raise_for_status()
+                data = check.json()
+                if data.get("faulted"):
+                    raise RuntimeError(f"Horde job faulted: {data}")
+                if data.get("done"):
+                    break
+
+            status = self._session.get(
+                _HORDE_STATUS_URL.format(job_id),
+                timeout=(KCPP_CONNECT_TIMEOUT, 30),
+            )
+            status.raise_for_status()
+            text = status.json()["generations"][0]["text"]
+
+            if finish_info is not None:
+                finish_info.append("stop")
+
+            # Yield word-by-word to simulate streaming for the agent loop.
+            words = text.split(" ")
+            for i, word in enumerate(words):
+                yield word if i == len(words) - 1 else word + " "
+
+        # Return job_id as the "genkey" so abort() can cancel the job.
+        return job_id, _poll_and_stream()
+
     def chat_complete_sync(
         self,
         messages: list[dict],
@@ -84,6 +169,13 @@ class KoboldClient:
         Used for compaction summaries where we want a single result without
         streaming overhead.
         """
+        if _USING_HORDE:
+            # Reuse the async path; collect all tokens into one string.
+            _, token_iter = self._horde_chat_stream(
+                messages, _make_genkey(), max_tokens=max_tokens
+            )
+            return "".join(token_iter).strip()
+
         payload = {
             **CHAT_DEFAULTS,
             "messages": messages,
@@ -109,9 +201,19 @@ class KoboldClient:
 
     def abort(self, genkey: str) -> bool:
         """
-        Abort a running generation. Waits ABORT_COOLDOWN seconds before
-        returning so the server is ready for the next request.
+        Abort a running generation.
+        For KCPP: POSTs to the abort endpoint and waits ABORT_COOLDOWN.
+        For Horde: DELETEs the job (genkey is the job ID).
         """
+        if _USING_HORDE:
+            try:
+                self._session.delete(
+                    _HORDE_CANCEL_URL.format(genkey),
+                    timeout=10,
+                )
+            except Exception:
+                pass
+            return False
         try:
             resp = self._session.post(
                 KCPP_ABORT_URL,
@@ -131,6 +233,9 @@ class KoboldClient:
     # ------------------------------------------------------------------
 
     def tokenize(self, text: str) -> int:
+        if _USING_HORDE:
+            # Horde has no tokenize endpoint — approximate with char count.
+            return len(text) // 4
         resp = self._session.post(
             KCPP_TOKENIZE_URL,
             json={"prompt": text},
@@ -140,7 +245,7 @@ class KoboldClient:
         return resp.json()["value"]
 
     # ------------------------------------------------------------------
-    # SSE parsers
+    # SSE parsers (KCPP only)
     # ------------------------------------------------------------------
 
     @staticmethod
