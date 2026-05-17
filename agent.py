@@ -1116,6 +1116,10 @@ class Agent:
             self._log.system(f"Compaction failed: {exc}")
             return False
 
+        # Qwen3-series models emit <think>...</think> before their actual output.
+        # Strip it so Boonie sees only the summary, not the summarizer's reasoning.
+        summary = re.sub(r"<think>.*?</think>", "", summary, flags=re.DOTALL).strip()
+
         if not summary:
             self._log.system("Compaction returned empty summary — skipping.")
             return False
