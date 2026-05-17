@@ -54,6 +54,7 @@ class Turn:
     agent_text:   str       = ""
     think_text:   str       = ""   # content of <think>…</think>, for training
     observations: list[str] = field(default_factory=list)
+    tg_context:   list[str] = field(default_factory=list)  # Telegram msgs that prompted this turn
 
 
 class Agent:
@@ -200,6 +201,7 @@ class Agent:
         self._log.system(f"Generation started (genkey={genkey})")
 
         turn          = Turn()
+        turn.tg_context = list(self._pending_tg)  # snapshot before they're cleared
         in_think      = False
         cur_line      = ""
         aborted       = False
@@ -842,6 +844,11 @@ class Agent:
             )
             if is_correction or not turn.agent_text.strip():
                 continue
+            # Telegram messages that arrived just before this turn become user
+            # messages immediately preceding the assistant response, preserving
+            # the conversational context that prompted the reply.
+            for tg_msg in turn.tg_context:
+                messages.append({"role": "user", "content": tg_msg})
             think = turn.think_text.strip()
             agent = turn.agent_text.rstrip()
             content = f"<think>\n{think}\n</think>\n{agent}" if think else agent
