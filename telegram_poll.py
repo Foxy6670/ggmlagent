@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 import requests
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_HISTORY
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_HISTORY, USE_TOR
 
 BOT_TOKEN = TELEGRAM_BOT_TOKEN
 CHAT_ID   = TELEGRAM_CHAT_ID
@@ -35,37 +35,38 @@ if not BOT_TOKEN:
     print("ERROR: TELEGRAM_BOT_TOKEN not set in .secrets or environment.", file=sys.stderr)
     sys.exit(1)
 
-# Preflight: wait for Tor SOCKS5 to become reachable.  At boot the harness
-# starts 60 s after reboot (boonie.sh sleep 60) but Tor may need another
-# minute or two to bootstrap.  Retry with backoff instead of dying immediately.
-_TOR_HOST, _TOR_PORT = "127.0.0.1", 9050
-_TOR_WAIT_SECS = [5, 10, 15, 30, 60, 120]  # cumulative wait up to ~4 min
-for _delay in [0] + _TOR_WAIT_SECS:
-    if _delay:
-        print(f"[telegram_poll] Tor not ready, retrying in {_delay}s…", file=sys.stderr)
-        time.sleep(_delay)
-    try:
-        with socket.create_connection((_TOR_HOST, _TOR_PORT), timeout=5):
-            break
-    except OSError:
-        pass
-else:
-    print(
-        f"ERROR: Tor SOCKS5 proxy not reachable at {_TOR_HOST}:{_TOR_PORT} after retries.\n"
-        f"  Install:  sudo apt install tor\n"
-        f"  Start:    sudo systemctl enable --now tor",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+if USE_TOR:
+    # Preflight: wait for Tor SOCKS5 to become reachable.  At boot the harness
+    # starts 60 s after reboot (boonie.sh sleep 60) but Tor may need another
+    # minute or two to bootstrap.  Retry with backoff instead of dying immediately.
+    _TOR_HOST, _TOR_PORT = "127.0.0.1", 9050
+    _TOR_WAIT_SECS = [5, 10, 15, 30, 60, 120]  # cumulative wait up to ~4 min
+    for _delay in [0] + _TOR_WAIT_SECS:
+        if _delay:
+            print(f"[telegram_poll] Tor not ready, retrying in {_delay}s…", file=sys.stderr)
+            time.sleep(_delay)
+        try:
+            with socket.create_connection((_TOR_HOST, _TOR_PORT), timeout=5):
+                break
+        except OSError:
+            pass
+    else:
+        print(
+            f"ERROR: Tor SOCKS5 proxy not reachable at {_TOR_HOST}:{_TOR_PORT} after retries.\n"
+            f"  Install:  sudo apt install tor\n"
+            f"  Start:    sudo systemctl enable --now tor",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-
 _TOR = {"http": "socks5h://127.0.0.1:9050", "https": "socks5h://127.0.0.1:9050"}
+_PROXIES = _TOR if USE_TOR else None
 
 
 def tg(method: str, **params) -> dict:
-    resp = requests.get(f"{BASE}/{method}", params=params, timeout=40, proxies=_TOR)
+    resp = requests.get(f"{BASE}/{method}", params=params, timeout=40, proxies=_PROXIES)
     return resp.json()
 
 
@@ -74,7 +75,7 @@ def send(chat_id: int, text: str) -> None:
         f"{BASE}/sendMessage",
         json={"chat_id": chat_id, "text": text},
         timeout=15,
-        proxies=_TOR,
+        proxies=_PROXIES,
     )
 
 

@@ -50,6 +50,7 @@ HORDE_API_KEY  = os.environ.get("HORDE_API_KEY", "0000000000")  # set in .secret
 # Comma-separated list of Horde model names to request, e.g. "koboldcpp/Qwen3-14B".
 # Empty = any available worker.
 HORDE_MODELS   = [m.strip() for m in os.environ.get("HORDE_MODELS", "").split(",") if m.strip()]
+USE_TOR = os.environ.get("USE_TOR", "0").lower() in ("1", "true", "yes")
 ABORT_COOLDOWN = 0.5
 CMD_TIMEOUT = 300        # seconds before a hanging command is auto-backgrounded
 # Connect timeout is separate from read timeout — keep it short so a dead/busy

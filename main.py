@@ -8,6 +8,10 @@ import sys
 import time
 from pathlib import Path
 
+# Set USE_TOR before any module-level config imports read it.
+if "--tor" in sys.argv:
+    os.environ["USE_TOR"] = "1"
+
 
 def main():
     parser = argparse.ArgumentParser(description="KoboldCPP agent harness")
@@ -36,6 +40,11 @@ def main():
         "--monero", "-xmr",
         action="store_true",
         help="Enable Monero wallet (starts monero-wallet-rpc; requires monero package)",
+    )
+    parser.add_argument(
+        "--tor",
+        action="store_true",
+        help="Route Telegram API calls through Tor SOCKS5 proxy (default: clearnet)",
     )
     parser.add_argument(
         "--simulate",

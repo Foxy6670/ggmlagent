@@ -15,9 +15,10 @@ import os
 import time
 import requests
 from pathlib import Path
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_HISTORY
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_HISTORY, USE_TOR
 
 _TOR = {"http": "socks5h://127.0.0.1:9050", "https": "socks5h://127.0.0.1:9050"}
+_PROXIES = _TOR if USE_TOR else None
 _HISTORY = Path(TELEGRAM_HISTORY)
 
 
@@ -40,7 +41,7 @@ def send(message: str) -> str:
             url,
             json={"chat_id": int(TELEGRAM_CHAT_ID), "text": message},
             timeout=15,
-            proxies=_TOR,
+            proxies=_PROXIES,
         )
         data = resp.json()
     except Exception as e:
