@@ -9,7 +9,7 @@ Persistent mem  — plain text file (memory.md), paged for reading.
 """
 
 from pathlib import Path
-from config import PERSISTENT_MEMORY_FILE, MEMORY_TOKEN_BUDGET
+from config import PERSISTENT_MEMORY_FILE, MEMORY_TOKEN_BUDGET, CMEM_INIT_FILE
 from kcpp_client import KoboldClient
 
 _PAGE_LINES = 128  # lines per page when scrolling persistent memory
@@ -21,6 +21,12 @@ class ContextMemory:
     def __init__(self, client: KoboldClient):
         self._client = client
         self._lines: list[str] = []
+        init_path = Path(CMEM_INIT_FILE)
+        if init_path.exists():
+            for line in init_path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    self._lines.append(line.rstrip())
+            self._enforce_budget()
 
     # --- public interface -------------------------------------------------
 

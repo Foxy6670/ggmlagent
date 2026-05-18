@@ -34,6 +34,7 @@ SOCKS5_PROXY = "socks5h://localhost:9050"
 
 PERSISTENT_MEMORY_FILE = "memory.md"
 TASK_FILE = "task.md"
+CMEM_INIT_FILE = "cmem_init.md"  # preloaded into context memory on every startup
 
 # Moltbook social network — set MOLTBOOK_API_KEY in .secrets after registering.
 # Registration: python3 -c "import moltbook; moltbook.register('AgentName','Description')"
