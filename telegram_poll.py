@@ -11,7 +11,7 @@ What it does:
   - Long-polls the Telegram Bot API for new messages
   - Writes each message to telegram_inbox.jsonl (read by the agent on each step)
   - Prints received messages to its own terminal for visibility
-  - Sends a "bot online" message when it starts
+  - Sends a "bot online" message on first successful poll (guarantees Tor circuit is up)
 
 Finding your chat ID:
   Run this script without TELEGRAM_CHAT_ID set. Send any message to your bot.
@@ -82,21 +82,11 @@ def main():
     print(f"[telegram_poll] Starting. Inbox: {INBOX}")
     if CHAT_ID:
         print(f"[telegram_poll] Accepting messages from chat_id={CHAT_ID}")
-        for _attempt, _wait in enumerate([0, 5, 10, 20, 40]):
-            if _wait:
-                print(f"[telegram_poll] startup send failed, retrying in {_wait}s…", file=sys.stderr)
-                time.sleep(_wait)
-            try:
-                send(int(CHAT_ID), "Hi, Foxo!")
-                break
-            except Exception as e:
-                print(f"[telegram_poll] startup send attempt {_attempt+1} failed: {e}", file=sys.stderr)
-        else:
-            print("[telegram_poll] WARNING: could not send startup message after retries", file=sys.stderr)
     else:
         print("[telegram_poll] TELEGRAM_CHAT_ID not set — will print all incoming chat IDs.")
 
     offset = 0
+    startup_sent = False
     while True:
         try:
             data = tg("getUpdates", offset=offset, timeout=30, allowed_updates="message")
@@ -105,6 +95,14 @@ def main():
             print(f"[telegram_poll] Poll error: {e} — retrying in 10s")
             time.sleep(10)
             continue
+
+        if CHAT_ID and not startup_sent:
+            try:
+                send(int(CHAT_ID), "Hi, Foxo!")
+                startup_sent = True
+                print("[telegram_poll] Startup message sent.")
+            except Exception as e:
+                print(f"[telegram_poll] Startup send failed (will retry): {e}", file=sys.stderr)
 
         for update in updates:
             offset = update["update_id"] + 1
