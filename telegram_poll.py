@@ -35,15 +35,23 @@ if not BOT_TOKEN:
     print("ERROR: TELEGRAM_BOT_TOKEN not set in .secrets or environment.", file=sys.stderr)
     sys.exit(1)
 
-# Preflight: Tor SOCKS5 must be reachable, otherwise every request explodes
-# with a 60-line urllib3/socks traceback.  Fail fast with a one-liner.
+# Preflight: wait for Tor SOCKS5 to become reachable.  At boot the harness
+# starts 60 s after reboot (boonie.sh sleep 60) but Tor may need another
+# minute or two to bootstrap.  Retry with backoff instead of dying immediately.
 _TOR_HOST, _TOR_PORT = "127.0.0.1", 9050
-try:
-    with socket.create_connection((_TOR_HOST, _TOR_PORT), timeout=2):
+_TOR_WAIT_SECS = [5, 10, 15, 30, 60, 120]  # cumulative wait up to ~4 min
+for _delay in [0] + _TOR_WAIT_SECS:
+    if _delay:
+        print(f"[telegram_poll] Tor not ready, retrying in {_delay}s…", file=sys.stderr)
+        time.sleep(_delay)
+    try:
+        with socket.create_connection((_TOR_HOST, _TOR_PORT), timeout=5):
+            break
+    except OSError:
         pass
-except OSError as e:
+else:
     print(
-        f"ERROR: Tor SOCKS5 proxy not reachable at {_TOR_HOST}:{_TOR_PORT} ({e}).\n"
+        f"ERROR: Tor SOCKS5 proxy not reachable at {_TOR_HOST}:{_TOR_PORT} after retries.\n"
         f"  Install:  sudo apt install tor\n"
         f"  Start:    sudo systemctl enable --now tor",
         file=sys.stderr,
