@@ -1131,10 +1131,21 @@ class Agent:
             self._log.system("Compaction returned empty summary — skipping.")
             return False
 
+        # Preserve any Telegram messages verbatim — the LLM summarizer tends to
+        # reduce them to "no instructions from Foxo", losing conversational context.
+        tg_verbatim: list[str] = []
+        for turn in to_compact:
+            tg_verbatim.extend(turn.tg_context)
+
         compact_turn = Turn()
         compact_turn.observations.append(
             f"[Compacted summary of {n} earlier turns]\n{summary}"
         )
+        if tg_verbatim:
+            compact_turn.observations.append(
+                "[Telegram messages from compacted turns — preserved verbatim]\n"
+                + "\n".join(tg_verbatim)
+            )
         self._history[:n] = [compact_turn]
         msg = f"Compacted {n} turns into summary ({len(summary)} chars)."
         print(f"{_YELLOW}[agent] {msg}{_RESET}", flush=True)
