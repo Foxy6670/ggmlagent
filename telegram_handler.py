@@ -11,6 +11,7 @@ Set env vars:
 """
 
 import json
+import os
 import time
 import requests
 from pathlib import Path
@@ -92,8 +93,12 @@ def drain_inbox() -> list[dict]:
         all_entries.append(entry)
 
     if unread:
-        with _HISTORY.open("w", encoding="utf-8") as f:
+        # Write to a temp file then atomically rename so telegram_poll's
+        # concurrent appends are never lost to a truncating open("w").
+        tmp = _HISTORY.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
             for entry in all_entries:
                 f.write(json.dumps(entry) + "\n")
+        os.replace(tmp, _HISTORY)
 
     return unread
