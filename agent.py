@@ -1118,7 +1118,7 @@ class Agent:
         ]
 
         try:
-            summary = self._client.chat_complete_sync(prompt, max_tokens=1024, timeout=600)
+            summary = self._client.chat_complete_sync(prompt, max_tokens=2048, timeout=600)
         except Exception as exc:
             self._log.system(f"Compaction failed: {exc}")
             return False
