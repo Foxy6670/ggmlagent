@@ -1,157 +1,107 @@
-# KoboldAI-based Agent
-## Project Outline
-This project is based around designing an endpoint for the native KoboldCPP API (http://localhost:5001/api/) that is able to complete a task outlined in a file named `task.md` on its' own (with human supervision).
+# ggmlagent
 
-## Permissions
+An autonomous agent harness built on [KoboldCPP](https://github.com/LostRuins/koboldcpp). The agent reads a task file, executes commands, browses the web, manages its own memory, and communicates over Telegram — running continuously on a dedicated machine.
 
-1. Read/write context memory
- - The model can read/write/delete up to the top 1/8 of the context (2048 of 16384 tokens (n_ctx) in this instance) on a per-line basis.
- - Perhaps the model could use a command (i.e. `/cmem w` or `/cmem d`) where it would then be prompted to enter the line it wants to modify, delete, or overwrite, and then be prompted what to over/write.
+---
 
-2. Read/write persistent memory
- - The model can read/write/delete an indefinite amount of data as it needs to a special `memory.md` file on a per-line basis, like context memory but saved to a file.
- - Because context memory uses the top 2048 tokens (n_ctx), that leaves the model with 14336 tokens for reading at a time. Commands could be `/pgup` and `/pgdown` for scrolling.
+## Hardware philosophy
 
-3. Read/write files in working directory and subdirectories
- - The model can read/write/delete files.
- - Works similarly to R/W pers. mem., but command syntax is different (`/dir {location}`, `/write {file}`, `/read {file}`. `/del {file}`; etc.).
+**Do not run this on a daily driver.**
 
-4. Search and browse the web
- - The model can search the web and browse webpages to gather info.
- - This traffic MUST pass through a socks5 proxy present at localhost:9050.
- - Perhaps commands like `/search "{query}"` and `/goto {URL}` would be in order.
+The agent runs in an infinite loop, consuming CPU, memory, and network continuously. It has shell access and can execute arbitrary commands as your user (and as root, with `--frwx`). It is designed to run on a dedicated, non-essential machine that you are comfortable handing over.
 
-## Important KCPP API tools
+Good candidates: a single-board computer (Raspberry Pi, MangoPi MQ-Pro, etc.), an old laptop, a cheap VPS, or any machine you can wipe without losing sleep. The hardware should be appropriate for the workload — something that can handle the task you assign without becoming a liability if the agent misbehaves.
 
- 1. [POST] /api/extra/generate/stream
- - Generates text given a prompt and generation settings, with SSE streaming.
- - Unspecified values are set to defaults.
+The inference backend (KoboldCPP + the model) runs separately, typically on a more powerful machine, and the agent connects to it over the network.
 
-Request body example:
-```json
-{"max_context_length":16384,
-	"max_length":128,
-	"rep_pen":1.05,
-	"temperature":0.5,
-	"top_p":0.9,
-	"rep_pen_range":360,
-	"rep_pen_slope":0.7,
-	"genkey":KCPP0001
-	"sampler_order":[6,0,1,3,4,2,5],
-	"memory":"Memory goes here!\n",
-	"stop_sequence":[],
-	"prompt": "Niko the kobold stalked carefully down the alley, his small scaly figure obscured by a dusky cloak that fluttered lightly in the cold winter breeze."}
+---
+
+## Requirements
+
+- Python 3.10+
+- `pip install requests[socks]` (SOCKS5 support for Tor routing)
+- A running [KoboldCPP](https://github.com/LostRuins/koboldcpp) instance with a chat-capable model loaded
+- (Optional) Tor, for routing KCPP connections to a remote `.onion` endpoint
+- (Optional) Telegram bot token + chat ID, for bidirectional messaging
+- (Optional) Moltbook API key, for social network integration
+- (Optional) `monero-wallet-rpc`, for the Monero wallet integration
+
+---
+
+## Setup
+
+1. Copy `.secrets.example` to `.secrets` and fill in your values:
+
+```
+KCPP_BASE_URL=http://your-kcpp-host:5001   # or a .onion address
+MOLTBOOK_API_KEY=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+MONERO_DAEMON=                              # optional; defaults to a public node
+MONERO_PROXY=                              # optional; set to 127.0.0.1:9050 for Tor
 ```
 
-Request return example:
-```json
-event: message
-data: {"token": " His", "finish_reason": null}
+2. Create a workspace directory for the agent (e.g. `mkdir myagent`). Put a `task.md` in it describing what the agent should do.
 
-event: message
-data: {"token": " eyes", "finish_reason": null}
+3. Run:
 
-event: message
-data: {"token": " gle", "finish_reason": null}
-
-event: message
-data: {"token": "amed", "finish_reason": null}
-
-event: message
-data: {"token": " with", "finish_reason": null}
-
-event: message
-data: {"token": " a", "finish_reason": null}
-
-event: message
-data: {"token": " sharp", "finish_reason": null}
-
-event: message
-data: {"token": ",", "finish_reason": null}
-
-...
-
-event: message
-data: {"token": " disappeared", "finish_reason": null}
-
-event: message
-data: {"token": " into", "finish_reason": null}
-
-event: message
-data: {"token": " the", "finish_reason": null}
-
-event: message
-data: {"token": " night", "finish_reason": null}
-
-event: message
-data: {"token": ".", "finish_reason": null}
-
-event: message
-data: {"token": "", "finish_reason": "stop"}
+```bash
+python3 main.py myagent/
 ```
 
-2. [POST] /api/extra/abort
- - Aborts a generation.
+Common flags:
 
-Request body example:
-```json
-{"genkey":"KCPP0001"}
-```
+| Flag | Effect |
+|------|--------|
+| `--telegram` / `-tg` | Enable Telegram integration (starts `telegram_poll.py` as a subprocess) |
+| `--monero` / `-xmr` | Start `monero-wallet-rpc` and expose wallet commands |
+| `--frwx` | Full read/write/execute — enables `$` (shell) and `#` (sudo) commands |
+| `--tor` | Route Telegram API calls through the local Tor SOCKS5 proxy |
+| `--simulate` | Dry-run: intercepts Moltbook writes and Telegram sends; reads/files/web stay real |
+| `--teleop` | Teleoperation mode: you type commands, the harness executes and logs training data |
 
-Request response example:
-```json
-{"success": "true", "done": "true"}
-```
+---
 
-3. [POST] /api/extra/tokenize
- - Counts the number of tokens in a string, and returns their token IDs.
+## ⚠️ Security warning: `--frwx`
 
-Request body example:
-```json
-{"prompt": "Hello, my name is Niko."}
-```
+With `--frwx`, the agent can run **any shell command as your user** (`$ command`) and **any command as root** (`# command`, via `sudo -n`). Only use this flag on a machine you have dedicated to the agent and are comfortable with it having full control over. Never use `--frwx` on a machine with sensitive data, shared users, or production services.
 
-Request response example:
-```json
-{"value": 9,
-	"ids": [
-		1,
-		22557,
-		28725,
-		586,
-		1141,
-		349,
-		11952,
-		28709,
-		28723
-	]
-}
-```
+---
 
-4. [POST] /api/extra/detokenize
- - Converts an array of token IDs into a string.
+## Agent capabilities
 
-Request body example:
-```json
-{
-	"ids": [
-		529,
-		29988,
-		5205,
-		29989,
-		29958,
-		13
-	]
-}
-```
+The agent communicates via a line-oriented command language. Commands available depend on flags passed to `main.py`:
 
-Request response example:
-```json
-{
-	"result": "’ TamPORT Packet Interior.",
-	"success": true
-}
-```
+- **Scratchpad** (`/cmem`) — volatile per-session notes, shown verbatim every turn
+- **Persistent memory** (`/pmem`) — file-backed, survives restarts and compaction
+- **Files** (`/read`, `/write`, `/edit`, `/patch`, `/del`, etc.) — workspace-scoped
+- **Shell** (`$`, `#`) — requires `--frwx`
+- **Web** (`/search`, `/goto`) — via Tor by default
+- **Moltbook** (`/mb`) — AI social network integration
+- **Telegram** (`/telegram`) — send messages to a configured chat; incoming messages are injected automatically
+- **Monero wallet** (`/wallet`) — requires `--monero`
+- **Background jobs** (`/bg`, `/fg`, `/jobs`) — for long-running commands
 
-## One More Thing
-Feel free to update and modify this file to be accurate to current/future versions.
+Context window: 32,768 tokens. The harness compacts older turns automatically when the budget fills.
+
+---
+
+## Telegram polling
+
+When `--telegram` is passed, `telegram_poll.py` runs as a subprocess and long-polls the Telegram Bot API, appending incoming messages to `tg_chat_history.jsonl` in the workspace. The agent reads this file each turn. Outgoing messages are sent directly via the Bot API.
+
+By default, Telegram traffic goes over clearnet. Pass `--tor` to route it through `127.0.0.1:9050` instead (useful when running off-site or behind a restrictive network).
+
+---
+
+## Startup sequence (agent)
+
+On each session start the agent: reads `task.md` → reads `cmem_init.md` (if present in workspace, preloads context memory) → begins the task loop.
+
+To preload persistent command references into the always-visible scratchpad, create a `cmem_init.md` in the workspace. Each non-blank line becomes a scratchpad entry on startup.
+
+---
+
+## Training data
+
+Each session produces a `.train.jsonl` file alongside its `.log` in `logs/`. Use `extract_training.py` to filter and curate turns for fine-tuning.
