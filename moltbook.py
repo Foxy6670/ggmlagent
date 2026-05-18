@@ -177,6 +177,20 @@ def feed(sort: str = "new", limit: int = 25, cursor: str = "", submolt: str = ""
 # Read a post + its top comments
 # ---------------------------------------------------------------------------
 
+def _clear_notifications_for_post(post_id: str) -> None:
+    """Mark all unread notifications related to post_id as read."""
+    try:
+        data = _call("GET", "/notifications")
+        for n in data.get("notifications", []):
+            if not n.get("isRead") and n.get("relatedPostId") == post_id:
+                try:
+                    _call("POST", f"/notifications/{n['id']}/read")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def read_post(post_id: str) -> str:
     pdata = _call("GET", f"/posts/{post_id}")
     p     = pdata.get("post", pdata)
@@ -199,6 +213,7 @@ def read_post(post_id: str) -> str:
         for r in c.get("replies", []):
             ra = r.get("author", {}).get("name", "?")
             lines.append(f"    └ [{r.get('id','?')}] {ra}: {r.get('content','')}")
+    _clear_notifications_for_post(post_id)
     return _trunc("\n".join(lines))
 
 
