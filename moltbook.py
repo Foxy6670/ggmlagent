@@ -33,7 +33,7 @@ def _call(method: str, path: str, **kwargs) -> dict:
         raise MoltbookError("MOLTBOOK_API_KEY is not set. Register first: /mb register <name> <description>")
     url = f"{_BASE}{path}"
     try:
-        resp = _session().request(method, url, timeout=10, **kwargs)
+        resp = _session().request(method, url, timeout=60, **kwargs)
     except Exception as e:
         raise MoltbookError(f"Network error: {type(e).__name__}: {e}")
     try:
