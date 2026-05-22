@@ -32,17 +32,8 @@ def _append_history(entry: dict) -> None:
         f.write(json.dumps(entry) + "\n")
 
 
-def send(message: str) -> str:
-    """Send a message via Telegram. Replies to the last incoming sender;
-    falls back to TELEGRAM_CHAT_ID for unprompted messages."""
-    global _last_incoming_chat_id
-    if not TELEGRAM_BOT_TOKEN:
-        return "[telegram] BOT_TOKEN not set — set TELEGRAM_BOT_TOKEN env var."
-
-    target = _last_incoming_chat_id or (int(TELEGRAM_CHAT_ID) if TELEGRAM_CHAT_ID else None)
-    if not target:
-        return "[telegram] No chat target — TELEGRAM_CHAT_ID not set and no incoming message received."
-
+def _send_to(message: str, target: int) -> str:
+    """Low-level send to a specific chat_id."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
         resp = requests.post(
@@ -54,12 +45,31 @@ def send(message: str) -> str:
         data = resp.json()
     except Exception as e:
         return f"[telegram] Send failed: {e}"
-
     if data.get("ok"):
         _append_history({"direction": "out", "from": "Boonie", "text": message,
                          "chat_id": target, "ts": time.time()})
         return "[telegram] Message sent."
     return f"[telegram] Send failed: {data.get('description', str(data))}"
+
+
+def send(message: str) -> str:
+    """Send a message via Telegram. Replies to the last incoming sender;
+    falls back to TELEGRAM_CHAT_ID for unprompted messages."""
+    if not TELEGRAM_BOT_TOKEN:
+        return "[telegram] BOT_TOKEN not set — set TELEGRAM_BOT_TOKEN env var."
+    target = _last_incoming_chat_id or (int(TELEGRAM_CHAT_ID) if TELEGRAM_CHAT_ID else None)
+    if not target:
+        return "[telegram] No chat target — TELEGRAM_CHAT_ID not set and no incoming message received."
+    return _send_to(message, target)
+
+
+def send_foxo(message: str) -> str:
+    """Send a message directly to Foxo (TELEGRAM_CHAT_ID), regardless of last sender."""
+    if not TELEGRAM_BOT_TOKEN:
+        return "[telegram] BOT_TOKEN not set — set TELEGRAM_BOT_TOKEN env var."
+    if not TELEGRAM_CHAT_ID:
+        return "[telegram] TELEGRAM_CHAT_ID not set — cannot send directly to Foxo."
+    return _send_to(message, int(TELEGRAM_CHAT_ID))
 
 
 def history() -> list[dict]:

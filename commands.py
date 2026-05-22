@@ -762,13 +762,21 @@ class CommandDispatcher:
 
     def _telegram(self, args: list[str]) -> str:
         """
-        /telegram             — show recent conversation history
-        /telegram <message>   — send a message to Foxo
+        /telegram                    — show recent conversation history
+        /telegram <message>          — reply to the last sender
+        /telegram @foxo <message>    — send directly to Foxo regardless of last sender
         """
         if self._tg is None:
             return "[telegram] Telegram is not enabled — start the harness with --telegram / -tg."
         if not args:
             return self._telegram_history()
+
+        direct_foxo = args[0].lower() == "@foxo"
+        if direct_foxo:
+            args = args[1:]
+            if not args:
+                return "[telegram] Usage: /telegram @foxo <message>"
+
         text = " ".join(args)
         if text == self._last_tg_text:
             return "[telegram] Duplicate — you already sent that exact message. Continue your task."
@@ -776,7 +784,7 @@ class CommandDispatcher:
         if elapsed < _TG_COOLDOWN:
             wait = int(_TG_COOLDOWN - elapsed)
             return f"[telegram] Too soon — sent a message {int(elapsed)}s ago. Wait {wait}s, then continue your task."
-        result = self._tg.send(text)
+        result = self._tg.send_foxo(text) if direct_foxo else self._tg.send(text)
         self._last_tg_text = text
         self._last_tg_time = time.time()
         return result
