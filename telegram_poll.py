@@ -81,10 +81,7 @@ def send(chat_id: int, text: str) -> None:
 
 def main():
     print(f"[telegram_poll] Starting. Inbox: {INBOX}")
-    if CHAT_ID:
-        print(f"[telegram_poll] Accepting messages from chat_id={CHAT_ID}")
-    else:
-        print("[telegram_poll] TELEGRAM_CHAT_ID not set — will print all incoming chat IDs.")
+    print(f"[telegram_poll] Accepting messages from all chats. Primary: {CHAT_ID or '(not set)'}")
 
     offset = 0
     startup_sent = False
@@ -119,15 +116,6 @@ def main():
             if not text:
                 continue
 
-            if CHAT_ID and str(cid) != str(CHAT_ID):
-                print(f"[telegram_poll] Ignored message from unknown chat_id={cid} (@{uname}): {text[:60]}")
-                continue
-
-            if not CHAT_ID:
-                print(f"[telegram_poll] Message from chat_id={cid} (@{uname}): {text[:80]}")
-                print("[telegram_poll] Set TELEGRAM_CHAT_ID to accept messages from this chat.")
-                continue
-
             # Write to chat history. Use Telegram's authoritative `date` field
             # (Unix timestamp); fall back to local clock if missing. Without
             # this, every backlog message displays as "01 Jan 00:00" and the
@@ -138,7 +126,7 @@ def main():
             INBOX.parent.mkdir(parents=True, exist_ok=True)
             with INBOX.open("a", encoding="utf-8") as f:
                 f.write(entry + "\n")
-            print(f"[telegram_poll] → inbox: [{uname}] {text[:80]}")
+            print(f"[telegram_poll] → inbox: [{uname} chat={cid}] {text[:80]}")
 
         time.sleep(1)
 

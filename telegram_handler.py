@@ -21,6 +21,10 @@ _TOR = {"http": "socks5h://127.0.0.1:9050", "https": "socks5h://127.0.0.1:9050"}
 _PROXIES = _TOR if USE_TOR else None
 _HISTORY = Path(TELEGRAM_HISTORY)
 
+# Chat ID of the most recently received message — replies go here.
+# Falls back to TELEGRAM_CHAT_ID for Boonie-initiated messages.
+_last_incoming_chat_id: int | None = None
+
 
 def _append_history(entry: dict) -> None:
     _HISTORY.parent.mkdir(parents=True, exist_ok=True)
@@ -29,17 +33,21 @@ def _append_history(entry: dict) -> None:
 
 
 def send(message: str) -> str:
-    """Send a message to Foxo via Telegram. Returns a result string."""
+    """Send a message via Telegram. Replies to the last incoming sender;
+    falls back to TELEGRAM_CHAT_ID for unprompted messages."""
+    global _last_incoming_chat_id
     if not TELEGRAM_BOT_TOKEN:
         return "[telegram] BOT_TOKEN not set — set TELEGRAM_BOT_TOKEN env var."
-    if not TELEGRAM_CHAT_ID:
-        return "[telegram] CHAT_ID not set — set TELEGRAM_CHAT_ID env var."
+
+    target = _last_incoming_chat_id or (int(TELEGRAM_CHAT_ID) if TELEGRAM_CHAT_ID else None)
+    if not target:
+        return "[telegram] No chat target — TELEGRAM_CHAT_ID not set and no incoming message received."
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
         resp = requests.post(
             url,
-            json={"chat_id": int(TELEGRAM_CHAT_ID), "text": message},
+            json={"chat_id": target, "text": message},
             timeout=15,
             proxies=_PROXIES,
         )
@@ -48,8 +56,9 @@ def send(message: str) -> str:
         return f"[telegram] Send failed: {e}"
 
     if data.get("ok"):
-        _append_history({"direction": "out", "from": "Boonie", "text": message, "ts": time.time()})
-        return "[telegram] Message sent to Foxo."
+        _append_history({"direction": "out", "from": "Boonie", "text": message,
+                         "chat_id": target, "ts": time.time()})
+        return "[telegram] Message sent."
     return f"[telegram] Send failed: {data.get('description', str(data))}"
 
 
@@ -94,6 +103,12 @@ def drain_inbox() -> list[dict]:
         all_entries.append(entry)
 
     if unread:
+        global _last_incoming_chat_id
+        # Track the last sender so replies are routed back to them.
+        for entry in reversed(unread):
+            if entry.get("chat_id"):
+                _last_incoming_chat_id = int(entry["chat_id"])
+                break
         # Write to a temp file then atomically rename so telegram_poll's
         # concurrent appends are never lost to a truncating open("w").
         tmp = _HISTORY.with_suffix(".tmp")
