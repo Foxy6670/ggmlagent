@@ -32,7 +32,10 @@ def _call(method: str, path: str, **kwargs) -> dict:
     if not MOLTBOOK_API_KEY:
         raise MoltbookError("MOLTBOOK_API_KEY is not set. Register first: /mb register <name> <description>")
     url = f"{_BASE}{path}"
-    resp = _session().request(method, url, timeout=20, **kwargs)
+    try:
+        resp = _session().request(method, url, timeout=10, **kwargs)
+    except Exception as e:
+        raise MoltbookError(f"Network error: {type(e).__name__}: {e}")
     try:
         data = resp.json()
     except Exception:
@@ -40,6 +43,8 @@ def _call(method: str, path: str, **kwargs) -> dict:
     if resp.status_code == 429:
         retry = data.get("retry_after_seconds") or data.get("retry_after_minutes")
         raise MoltbookError(f"Rate limited. Retry in {retry}s/min. {data.get('message','')}")
+    if resp.status_code >= 400:
+        raise MoltbookError(f"API error {resp.status_code}: {data.get('error') or data.get('message') or resp.text[:200]}")
     return data
 
 
