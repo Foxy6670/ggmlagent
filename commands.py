@@ -197,6 +197,12 @@ class CommandDispatcher:
                 return "[error] Shell access requires --frwx flag."
             root = stripped.startswith("# ")
             cmd_str = stripped[2:].strip()
+            placeholders = re.findall(r'<[a-zA-Z_][a-zA-Z0-9_\-]*>', cmd_str)
+            if placeholders:
+                return (
+                    f"[system] Command contains unsubstituted placeholder(s): "
+                    f"{', '.join(placeholders)}. Replace each with an actual value before running."
+                )
             return self._shell(cmd_str, root=root)
         if not stripped.startswith("/"):
             return None

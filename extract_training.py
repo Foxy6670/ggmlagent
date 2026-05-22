@@ -35,8 +35,10 @@ _BAD_OBS_PREFIXES = (
     "[error] Command cut off mid-token",  # legacy — pre-2026-05-03 wording
 )
 
-_LINE_RE = re.compile(r"^\d{2}:\d{2}:\d{2}\.\d+ \[(\w+)\s*\] (.*)")
-_ABORT_RE = re.compile(r"\[SYS\s*\] Abort sent \(genkey=[A-Z0-9]+\), (.+?)\s*$")
+_LINE_RE     = re.compile(r"^\d{2}:\d{2}:\d{2}\.\d+ \[(\w+)\s*\] (.*)")
+_ABORT_RE    = re.compile(r"\[SYS\s*\] Abort sent \(genkey=[A-Z0-9]+\), (.+?)\s*$")
+_MODEL_RE    = re.compile(r'"model"\s*:\s*"([^"]+)"')
+_SELF_REF_RE = re.compile(r'\bthe user\b', re.IGNORECASE)
 
 
 def _session_health(path: Path) -> tuple[int, int]:
@@ -57,6 +59,21 @@ def _session_health(path: Path) -> tuple[int, int]:
         if "executing command" in m.group(1):
             exec_n += 1
     return exec_n, total
+
+
+def _extract_model(path: Path) -> str:
+    """Scan the first ~200 SSE lines of a log for the model name."""
+    scanned = 0
+    for raw in path.read_text(errors="replace").splitlines():
+        if "[SSE]" not in raw:
+            continue
+        m = _MODEL_RE.search(raw)
+        if m:
+            return m.group(1)
+        scanned += 1
+        if scanned > 200:
+            break
+    return "unknown"
 
 
 @dataclass
@@ -135,6 +152,8 @@ def _is_bad(turn: Turn) -> bool:
         for prefix in _BAD_OBS_PREFIXES:
             if prefix.lower() in obs.lower():
                 return True
+    if _SELF_REF_RE.search(turn.think):
+        return True
     return False
 
 
@@ -180,6 +199,10 @@ def main():
         "--exclude", action="append", default=[],
         help="skip sessions whose filename contains this substring; repeatable",
     )
+    parser.add_argument(
+        "--model-tag", default=None,
+        help="override model name in output (default: auto-detect from log SSE lines)",
+    )
     args = parser.parse_args()
 
     if args.system:
@@ -218,12 +241,13 @@ def main():
         if len(good) < args.min_turns:
             print(f"  skip {p.name} ({len(good)} good turns)", file=sys.stderr)
             continue
+        model = args.model_tag or _extract_model(p)
         messages = _build_messages(turns, system_prompt)
-        out.write(json.dumps({"messages": messages}, ensure_ascii=False) + "\n")
+        out.write(json.dumps({"model": model, "messages": messages}, ensure_ascii=False) + "\n")
         total_sessions += 1
         total_turns += len(good)
         ratio_str = f", exec {exec_n}/{total_aborts}" if total_aborts else ""
-        print(f"  {p.name}: {len(good)} good turns{ratio_str}", file=sys.stderr)
+        print(f"  {p.name} [{model}]: {len(good)} good turns{ratio_str}", file=sys.stderr)
 
     if args.out != "-":
         out.close()
