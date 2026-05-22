@@ -1054,7 +1054,7 @@ class Agent:
         # trailing-edge cache slot.  Hourly granularity to keep most turns
         # within a single timestamp value.
         now = datetime.now().strftime("%d %b %Y, %H:00")
-        messages.append({"role": "user", "content": f"[{now}]"})
+        messages.append({"role": "user", "content": f"[system: current time is {now}]"})
 
         return messages
 
