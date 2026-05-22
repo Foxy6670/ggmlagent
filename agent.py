@@ -85,7 +85,8 @@ class Agent:
         )
         self._history:      list[Turn] = []
         self._log           = SessionLogger()
-        self._pending_tg:   list[str] = []   # Telegram messages waiting to be shown
+        self._pending_tg:          list[str] = []   # Telegram messages waiting to be shown
+        self._pending_corrections: list[str] = []   # injected at start of next turn
         self._loop_detector = CommandLoopDetector()
         self._job_mgr       = JobManager()
         # Tracked across retries so we can abort an orphaned generation
@@ -224,6 +225,11 @@ class Agent:
                     in_think = True
                 if in_think and "</think>" in cur_line:
                     in_think = False
+                    if re.search(r'\bthe user\b', turn.think_text, re.IGNORECASE):
+                        self._pending_corrections.append(
+                            "[system] In your <think> block you referred to yourself as "
+                            "\"the user\". You are the agent — always use \"I\" in your reasoning."
+                        )
                     # Discard everything accumulated in cur_line during the
                     # think block (including the synthetic </think> tag itself).
                     # If we don't clear here, that content bleeds into the very
@@ -1045,6 +1051,11 @@ class Agent:
 
             if messages[-1]["role"] == "assistant":
                 messages.append({"role": "user", "content": "Continue your task."})
+
+        # Perspective corrections from previous turn's think block
+        for correction in self._pending_corrections:
+            messages.append({"role": "user", "content": correction})
+        self._pending_corrections.clear()
 
         # Pending Telegram messages (ephemeral, not stored in history)
         for tg in self._pending_tg:
