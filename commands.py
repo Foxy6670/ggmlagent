@@ -141,6 +141,9 @@ def _write_lines(path_str: str, lines: list[str]) -> None:
 
 _TG_COOLDOWN = 60  # seconds between /telegram commands
 
+_MB_ERROR_THRESHOLD = 3     # consecutive 5xx errors before cooling off
+_MB_COOLOFF_SECS    = 300   # 5 minutes
+
 class CommandDispatcher:
     def __init__(
         self,
@@ -160,6 +163,8 @@ class CommandDispatcher:
         self.pending: PendingEdit | None = None
         self._last_tg_text: str = ""
         self._last_tg_time: float = 0.0
+        self._mb_consec_errors: int = 0
+        self._mb_cooloff_until: float = 0.0
         self._page_buf:    list[str] = []  # pages of the last /search or /goto result
         self._page_cur:    int = 0
         self._sim = sim
@@ -562,6 +567,31 @@ class CommandDispatcher:
     # -----------------------------------------------------------------------
 
     def _mb(self, args: list[str]) -> str:
+        """Backoff wrapper around _mb_dispatch. Tracks consecutive 5xx errors."""
+        now = time.time()
+        if self._mb_cooloff_until > now:
+            wait = int(self._mb_cooloff_until - now)
+            return (
+                f"[mb] Moltbook is cooling off after {_MB_ERROR_THRESHOLD} consecutive "
+                f"server errors — {wait}s remaining. Use this time to write a post draft "
+                f"in /cmem, check /pmem, browse the web, or check your wallet."
+            )
+        result = self._mb_dispatch(args)
+        is_server_error = any(f"API error {c}" in result for c in ("500", "502", "503", "504"))
+        if is_server_error:
+            self._mb_consec_errors += 1
+            if self._mb_consec_errors >= _MB_ERROR_THRESHOLD:
+                self._mb_cooloff_until = time.time() + _MB_COOLOFF_SECS
+                result += (
+                    f"\n[mb] {_MB_ERROR_THRESHOLD} consecutive server errors — "
+                    f"cooling off for {_MB_COOLOFF_SECS // 60} minutes. "
+                    "Do something else and try /mb again later."
+                )
+        else:
+            self._mb_consec_errors = 0
+        return result
+
+    def _mb_dispatch(self, args: list[str]) -> str:
         """
         /mb <subcommand> [args...]
 
