@@ -199,7 +199,8 @@ class Agent:
         )
 
         now = datetime.now().strftime("%d %b %Y, %H:%M")
-        print(f"\n{_CYAN}[agent {now}]{_RESET} ", end="", flush=True)
+        ctx_str = f" | {100 - self._last_ctx_pct}% ctx" if self._last_ctx_pct else ""
+        print(f"\n{_CYAN}[agent {now}{ctx_str}]{_RESET} ", end="", flush=True)
         self._log.system(f"Generation started (genkey={genkey})")
 
         turn          = Turn()
@@ -226,11 +227,6 @@ class Agent:
                     in_think = True
                 if in_think and "</think>" in cur_line:
                     in_think = False
-                    if re.search(r'\bthe user\b', turn.think_text, re.IGNORECASE):
-                        self._pending_corrections.append(
-                            "[system] In your <think> block you referred to yourself as "
-                            "\"the user\". You are the agent — always use \"I\" in your reasoning."
-                        )
                     # Discard everything accumulated in cur_line during the
                     # think block (including the synthetic </think> tag itself).
                     # If we don't clear here, that content bleeds into the very
