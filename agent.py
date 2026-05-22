@@ -91,7 +91,8 @@ class Agent:
         self._job_mgr       = JobManager()
         # Tracked across retries so we can abort an orphaned generation
         # (e.g. when chat_stream times out mid-prompt-eval) before re-issuing.
-        self._last_genkey: str | None = None
+        self._last_genkey:    str | None = None
+        self._last_ctx_pct:   int       = 0    # context % used, updated each turn
 
         # When simulating, the sim doubles as the TG handler so drain_inbox()
         # below pulls operator-injected messages instead of polling Tor.
@@ -1061,11 +1062,11 @@ class Agent:
         for tg in self._pending_tg:
             messages.append({"role": "user", "content": tg})
 
-        # Timestamp — ephemeral, at the very end so it only invalidates the
-        # trailing-edge cache slot.  Hourly granularity to keep most turns
-        # within a single timestamp value.
-        now = datetime.now().strftime("%d %b %Y, %H:00")
-        messages.append({"role": "user", "content": f"[system: current time is {now}]"})
+        # Timestamp + context usage — ephemeral, at the very end so they only
+        # invalidate the trailing-edge cache slot.
+        now = datetime.now().strftime("%d %b %Y, %H:%M")
+        ctx = f" | context: {self._last_ctx_pct}% used" if self._last_ctx_pct else ""
+        messages.append({"role": "user", "content": f"[system: current time is {now}{ctx}]"})
 
         return messages
 
@@ -1181,11 +1182,13 @@ class Agent:
         # 1. Uncompressed — ideal path
         messages = self._build_messages(compress=False)
         if _fits(messages):
+            self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
             return messages
 
         # 2. Compressed observations
         messages = self._build_messages(compress=True)
         if _fits(messages):
+            self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
             return messages
 
         # 3 & 4. Context still too large: alternate compaction and hard-drop
@@ -1206,6 +1209,7 @@ class Agent:
             self._log.system(msg)
             messages = self._build_messages(compress=True)
 
+        self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
         return messages
 
 
