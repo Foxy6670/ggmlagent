@@ -842,7 +842,7 @@ class Agent:
             is_correction = any(
                 obs.startswith(p) for obs in turn.observations for p in self._BAD_OBS_PREFIXES
             )
-            if is_correction or not turn.agent_text.strip():
+            if is_correction or not turn.agent_text.replace("<|eoc|>", "").strip():
                 continue
             # Telegram messages that arrived just before this turn become user
             # messages immediately preceding the assistant response, preserving
@@ -1037,7 +1037,7 @@ class Agent:
             messages.append({"role": "user", "content": "Begin. Read your task file first."})
         else:
             for turn in self._history:
-                if turn.agent_text.strip():
+                if turn.agent_text.replace("<|eoc|>", "").strip():
                     messages.append({"role": "assistant", "content": turn.agent_text.rstrip()})
                 for obs in turn.observations:
                     content = _compress_obs_for_history(obs) if compress else obs
