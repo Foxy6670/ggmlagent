@@ -575,6 +575,27 @@ class Agent:
                 self._record_obs(turn, actual, result, command=True)
                 aborted = True
 
+        # If the stream ended while inside a command body block (opened with ```
+        # but closing ``` arrived without a trailing newline, or generation hit
+        # max_tokens), dispatch whatever was accumulated.
+        if not aborted and in_body_block and body_block_is_cmd:
+            tail = cur_line.strip()
+            if tail and tail != body_block_delim:
+                body_block_lines.append(cur_line.rstrip())
+            in_body_block = False
+            lines = body_block_lines[:]
+            body_block_lines = []
+            cmd_line = lines[0].strip() if lines else ""
+            body = "\n".join(lines[1:])
+            if cmd_line:
+                self._log.command(f"[block-eos] {cmd_line}")
+                self._log.system(f"Executing command block at end-of-stream (genkey={genkey})")
+                result = self._dispatch.dispatch_block(cmd_line, body)
+                if cmd_line.lower().startswith("/telegram "):
+                    self._pending_tg.clear()
+                self._record_obs(turn, cmd_line, result, command=True)
+                aborted = True
+
         # Bug fix: if the stream ended without a trailing newline, the last
         # line never went through the newline-detection block.  Check it now.
         if not aborted and not in_think:
