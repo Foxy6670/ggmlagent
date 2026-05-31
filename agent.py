@@ -239,6 +239,18 @@ class Agent:
                     # reasoning line instead of the real command/content.
                     cur_line = ""
 
+                # Strip stray </think> that appears outside any think block.
+                # The model occasionally emits an extra closing tag after the
+                # real </think>; letting it through creates confusing [THINK]
+                # log entries and pollutes agent_text.
+                if not in_think and not was_thinking and "</think>" in token:
+                    stripped_token = token.replace("</think>", "")
+                    # Undo the already-appended stray tag from cur_line.
+                    cur_line = cur_line[: len(cur_line) - len(token)] + stripped_token
+                    token = stripped_token
+                    if not token:
+                        continue
+
                 if in_think or was_thinking or "<think>" in token or "</think>" in token:
                     print(f"{_DIM}{token}{_RESET}", end="", flush=True)
                 else:
