@@ -131,7 +131,7 @@ class Agent:
                     kind = "unreachable"
                     # Server is gone — the genkey died with it, no abort to send.
                     self._last_genkey = None
-                except requests.exceptions.Timeout as e:
+                except (requests.exceptions.Timeout, TimeoutError) as e:
                     err = e
                     kind = "timeout"
                     # Server might still be alive; free its slot before retry.

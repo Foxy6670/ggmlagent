@@ -11,6 +11,8 @@ the AI Horde async job API instead of a local KCPP instance.
 """
 
 import json
+import queue as _queue
+import threading as _threading
 import time
 import uuid
 import requests
@@ -19,6 +21,7 @@ from typing import Callable, Iterator
 from config import (
     KCPP_BASE_URL, KCPP_CHAT_URL, KCPP_ABORT_URL, KCPP_TOKENIZE_URL,
     SOCKS5_PROXY, CHAT_DEFAULTS, ABORT_COOLDOWN, KCPP_CONNECT_TIMEOUT,
+    KCPP_FIRST_TOKEN_TIMEOUT, KCPP_INTER_TOKEN_TIMEOUT,
     HORDE_API_KEY, HORDE_MODELS,
 )
 
@@ -89,7 +92,7 @@ class KoboldClient:
             KCPP_CHAT_URL,
             json=payload,
             stream=True,
-            timeout=(KCPP_CONNECT_TIMEOUT, 600),  # connect fast-fail; 10 min read for slow CPU prompt-eval
+            timeout=(KCPP_CONNECT_TIMEOUT, None),  # connect fast-fail; per-token timeouts enforced in _iter_chat_tokens
         )
         resp.raise_for_status()
 
@@ -249,28 +252,19 @@ class KoboldClient:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _iter_chat_tokens(
+    def _parse_sse_stream(
         response: requests.Response,
         log_raw: "Callable[[str], None] | None" = None,
         finish_info: "list[str] | None" = None,
-    ) -> Iterator[str]:
+    ) -> "Iterator[str]":
         """
-        Parse OpenAI-compatible SSE stream.
+        Parse OpenAI-compatible SSE stream — yields tokens with no timeout
+        logic.  Called from _iter_chat_tokens which enforces per-token timeouts.
 
-        Each chunk looks like:
-          data: {"choices": [{"delta": {"content": "tok"}, "finish_reason": null}]}
-        Ends with:
-          data: [DONE]
-
-        Qwen3-series models (and others with native reasoning support) send
-        think-block tokens in a separate "reasoning_content" field rather than
-        "content".  We re-wrap those tokens with <think>…</think> tags so the
-        existing in_think detection in agent.py works without any changes there.
-
-        Every raw SSE line is forwarded to log_raw (if supplied) so that
-        unexpected early terminations can be diagnosed from the session log.
+        Qwen3-series models send think-block tokens in "reasoning_content";
+        we re-wrap with <think>…</think> so agent.py's detection works unchanged.
         """
-        in_reasoning = False   # True while we are inside a reasoning_content run
+        in_reasoning = False
 
         for raw_line in response.iter_lines(decode_unicode=True):
             if log_raw:
@@ -307,10 +301,6 @@ class KoboldClient:
                 if in_reasoning:
                     in_reasoning = False
                     yield "</think>"
-                # Qwen3-series models sometimes emit literal <think>/<think>
-                # tags in the content field as a transition marker.  Strip them
-                # here — we already inject synthetic tags above, so leaving
-                # these through would cause visible stacking in the output.
                 token = token.replace("<think>", "").replace("</think>", "")
                 if token:
                     yield token
@@ -321,6 +311,57 @@ class KoboldClient:
                     finish_info.append(fr)
                 break
 
-        # If the stream ended while still inside a reasoning block, close it.
         if in_reasoning:
             yield "</think>"
+
+    @staticmethod
+    def _iter_chat_tokens(
+        response: requests.Response,
+        log_raw: "Callable[[str], None] | None" = None,
+        finish_info: "list[str] | None" = None,
+    ) -> "Iterator[str]":
+        """
+        Wrap _parse_sse_stream with per-token timeouts using a thread+queue.
+
+        Two separate deadlines:
+          - KCPP_FIRST_TOKEN_TIMEOUT: max wait for the very first token
+            (covers full prompt prefill which can take ~60 s on 32k context).
+          - KCPP_INTER_TOKEN_TIMEOUT: max gap between any two consecutive tokens
+            once generation has started (~15 s at 3 tok/s normal rate).
+
+        On timeout, response.close() is called to unblock the reader thread,
+        then TimeoutError is raised so the caller (agent.py) can abort+retry.
+        """
+        token_q: "_queue.Queue[str | BaseException | object]" = _queue.Queue()
+        _DONE = object()
+
+        def _reader() -> None:
+            try:
+                for tok in KoboldClient._parse_sse_stream(
+                    response, log_raw=log_raw, finish_info=finish_info
+                ):
+                    token_q.put(tok)
+            except Exception as exc:  # noqa: BLE001
+                token_q.put(exc)
+            finally:
+                token_q.put(_DONE)
+
+        _threading.Thread(target=_reader, daemon=True).start()
+
+        first = True
+        while True:
+            timeout = KCPP_FIRST_TOKEN_TIMEOUT if first else KCPP_INTER_TOKEN_TIMEOUT
+            try:
+                item = token_q.get(timeout=timeout)
+            except _queue.Empty:
+                response.close()
+                label = "first-token" if first else "inter-token"
+                raise TimeoutError(
+                    f"[kcpp] {label} timeout ({timeout:.0f}s) — generation hung"
+                )
+            if item is _DONE:
+                return
+            if isinstance(item, BaseException):
+                raise item
+            first = False
+            yield item
