@@ -24,8 +24,10 @@ from memory import ContextMemory, PersistentMemory
 import web as web_mod
 import moltbook as mb_mod
 from apply_patch import (
-    apply_patch       as _apply_patch,
-    format_summary    as _format_patch_summary,
+    apply_patch          as _apply_patch,
+    format_summary       as _format_patch_summary,
+    is_unified_diff      as _is_unified_diff,
+    unified_diff_to_patch as _unified_diff_to_patch,
     PatchError        as _PatchError,
     BEGIN_PATCH, END_PATCH,
 )
@@ -472,14 +474,18 @@ class CommandDispatcher:
     # -----------------------------------------------------------------------
 
     def _begin_patch(self, args: list[str]) -> str:
-        """/patch — apply a multi-file patch in apply_patch format."""
+        """/patch — apply a multi-file patch. Accepts unified diff or apply_patch format."""
         # old_lines is reused as the line buffer; file_path is unused for /patch.
         self.pending = PendingEdit(mode="patch", file_path="")
         return (
-            "[patch] Write the full patch starting with '*** Begin Patch'.\n"
-            "Use *** Add File: / *** Update File: / *** Delete File: for ops.\n"
-            "Inside Update hunks: '+' adds, '-' removes, ' ' (space) is context.\n"
-            "Patch is applied automatically when '*** End Patch' is reached."
+            "[patch] Paste your patch, then write '*** End Patch' on its own line to apply.\n"
+            "Accepts standard unified diff (diff -u / git diff) OR the custom format:\n"
+            "  *** Begin Patch\n"
+            "  *** Update File: path/to/file\n"
+            "  @@ optional anchor\n"
+            "  -old line\n"
+            "  +new line\n"
+            "  *** End Patch"
         )
 
     def _patch_input(self, text: str) -> str:
@@ -490,23 +496,36 @@ class CommandDispatcher:
         if text.strip() != END_PATCH:
             return ""  # batch mode — result is discarded
 
-        # End-of-patch reached — locate the begin marker and apply.
+        # End-of-patch reached — locate start of patch content and apply.
         buf = p.old_lines
-        try:
-            begin_idx = next(
-                i for i, line in enumerate(buf) if line.strip() == BEGIN_PATCH
-            )
-        except StopIteration:
-            self.pending = None
-            return (
-                "[patch] Error: '*** Begin Patch' marker not found. "
-                "Reissue /patch and start the patch with '*** Begin Patch'."
-            )
-
-        full_patch = "\n".join(buf[begin_idx:])
         self.pending = None
+
+        # Find the begin marker if present (custom format); otherwise use the
+        # first non-blank line (unified diff has no begin marker).
+        begin_idx = next(
+            (i for i, line in enumerate(buf) if line.strip() == BEGIN_PATCH),
+            None,
+        )
+        if begin_idx is None:
+            # No custom-format begin marker — treat entire buffer as unified diff.
+            raw = "\n".join(buf)
+            if not _is_unified_diff(raw):
+                return (
+                    "[patch] Error: unrecognised patch format. Use standard unified diff "
+                    "(diff -u / git diff) or the custom format starting with '*** Begin Patch'."
+                )
+        else:
+            raw = "\n".join(buf[begin_idx:])
+
+        # Auto-convert unified diff to apply_patch format if needed.
+        if _is_unified_diff(raw):
+            try:
+                raw = _unified_diff_to_patch(raw)
+            except Exception as e:
+                return f"[patch] Error converting unified diff: {e}"
+
         try:
-            result = _apply_patch(full_patch, safe_path=_safe_path)
+            result = _apply_patch(raw, safe_path=_safe_path)
         except _PatchError as e:
             return f"[patch] Error: {e}"
         except FileNotFoundError as e:

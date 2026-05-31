@@ -2,11 +2,12 @@
 Main agent loop.
 
 Message structure sent to /v1/chat/completions each turn:
-  system  : system prompt + live context memory + persistent memory page + task hint
-  user    : "Begin." (first turn only) OR last observation
-  assistant: previous agent text
-  user    : observation
-  ...     (history, trimmed if needed)
+  system    : system prompt + live context memory + persistent memory page + task hint
+  user      : scratchpad display
+  assistant : previous agent text
+  system    : observation (command result — distinct from Foxo's voice)
+  user      : "Continue your task." / Telegram messages from Foxo
+  ...       (history, trimmed if needed)
 
 Stream loop per turn:
   1. Build messages, trim if over budget → send to KCPP chat endpoint
@@ -857,7 +858,7 @@ class Agent:
             content = f"<think>\n{think}\n</think>\n{agent}" if think else agent
             messages.append({"role": "assistant", "content": content})
             for obs in turn.observations:
-                messages.append({"role": "user", "content": obs})
+                messages.append({"role": "system", "content": obs})
             good_turns += 1
 
         if good_turns < 3:
@@ -1044,9 +1045,9 @@ class Agent:
                     messages.append({"role": "assistant", "content": turn.agent_text.rstrip()})
                 for obs in turn.observations:
                     content = _compress_obs_for_history(obs) if compress else obs
-                    messages.append({"role": "user", "content": content})
+                    messages.append({"role": "system", "content": content})
 
-            if messages[-1]["role"] == "assistant":
+            if messages[-1]["role"] in ("assistant", "system"):
                 messages.append({"role": "user", "content": "Continue your task."})
 
         # Perspective corrections from previous turn's think block

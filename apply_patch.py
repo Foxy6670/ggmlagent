@@ -26,6 +26,7 @@ Search is exact first, then progressively more lenient (rstrip, strip, then
 unicode-punctuation normalization) so small whitespace mismatches still apply.
 """
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Union
@@ -392,6 +393,105 @@ def apply_patch(text: str, *, safe_path: Callable[[str], Path]) -> ApplyResult:
                 _record("modified", hunk.path)
 
     return result
+
+
+_UNIFIED_HUNK_RE = re.compile(r'^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@(.*)')
+
+_GIT_SKIP_PREFIXES = (
+    'diff --git ', 'index ', 'new file mode', 'deleted file mode',
+    'old mode', 'new mode', 'similarity index', 'rename from', 'rename to',
+)
+
+
+def is_unified_diff(text: str) -> bool:
+    """Return True if text looks like a standard unified diff rather than apply_patch format."""
+    for line in text.splitlines():
+        s = line.strip()
+        if s == BEGIN_PATCH:
+            return False
+        if s.startswith('diff --git ') or s.startswith('--- '):
+            return True
+    return False
+
+
+def unified_diff_to_patch(text: str) -> str:
+    """Convert standard unified diff (including git diff) to apply_patch format."""
+    lines = text.splitlines()
+    out = [BEGIN_PATCH]
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        line = lines[i]
+
+        if any(line.startswith(h) for h in _GIT_SKIP_PREFIXES):
+            i += 1
+            continue
+
+        if line.startswith('--- '):
+            old_path = line[4:].split('\t')[0].rstrip()
+            for pfx in ('a/', 'i/'):
+                if old_path.startswith(pfx):
+                    old_path = old_path[len(pfx):]
+                    break
+
+            if i + 1 < n and lines[i + 1].startswith('+++ '):
+                new_path = lines[i + 1][4:].split('\t')[0].rstrip()
+                for pfx in ('b/', 'i/'):
+                    if new_path.startswith(pfx):
+                        new_path = new_path[len(pfx):]
+                        break
+                i += 2
+
+                if old_path == '/dev/null':
+                    out.append(f'{ADD_FILE}{new_path}')
+                    while i < n:
+                        l = lines[i]
+                        if _UNIFIED_HUNK_RE.match(l):
+                            i += 1
+                            continue
+                        if l.startswith('+') and not l.startswith('+++'):
+                            out.append(l)
+                            i += 1
+                        elif l.startswith('\\ ') or l.startswith(' ') or l.startswith('-'):
+                            i += 1
+                        else:
+                            break
+
+                elif new_path == '/dev/null':
+                    out.append(f'{DELETE_FILE}{old_path}')
+                    while i < n:
+                        l = lines[i]
+                        if any(l.startswith(h) for h in _GIT_SKIP_PREFIXES) or l.startswith('--- '):
+                            break
+                        i += 1
+
+                else:
+                    out.append(f'{UPDATE_FILE}{new_path}')
+                    while i < n:
+                        l = lines[i]
+                        if any(l.startswith(h) for h in _GIT_SKIP_PREFIXES) or l.startswith('--- '):
+                            break
+                        m = _UNIFIED_HUNK_RE.match(l)
+                        if m:
+                            ctx = m.group(1).strip()
+                            out.append(f'@@ {ctx}' if ctx else '@@')
+                            i += 1
+                        elif l.startswith('\\ '):
+                            i += 1
+                        elif not l or l[0] in ('+', '-', ' '):
+                            if not l.startswith('+++') and not l.startswith('---'):
+                                out.append(l)
+                            i += 1
+                        else:
+                            break
+            else:
+                i += 1
+        else:
+            i += 1
+
+    out.append(END_PATCH)
+    return '\n'.join(out)
 
 
 def format_summary(result: ApplyResult) -> str:
