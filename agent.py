@@ -216,8 +216,11 @@ class Agent:
         # Markdown shell fences (```bash / ``` ... ```) are accumulated and
         # dispatched as a single `$ <cmd>` shell invocation when the closing
         # fence arrives. Modern instruct models default to this syntax.
-        in_shell_block = False
-        shell_buffer: list[str] = []
+        in_shell_block  = False
+        shell_buffer:  list[str] = []
+        in_body_block   = False
+        body_block_delim = ""
+        body_block_lines: list[str] = []
 
         try:
             for token in token_iter:
@@ -323,6 +326,43 @@ class Agent:
                                 _trim_agent_text(turn, stripped)
                                 in_shell_block = True
                                 shell_buffer = []
+                                continue
+
+                            # Body blocks: """ or ''' or ``` (bare, no language tag)
+                            # act as delimiters for multiline command content.
+                            # Lines inside are accumulated verbatim — no command
+                            # detection — so posts, comments, and messages can span
+                            # multiple paragraphs without accidentally triggering
+                            # commands that start with /, $, or #.
+                            # First line inside = command + args; remaining = body.
+                            elif in_body_block:
+                                if stripped == body_block_delim:
+                                    _trim_agent_text(turn, stripped)
+                                    in_body_block = False
+                                    cmd_line = body_block_lines[0].strip() if body_block_lines else ""
+                                    body = "\n".join(body_block_lines[1:])
+                                    body_block_lines = []
+                                    if not cmd_line:
+                                        obs = "[system] Body block closed with no command on the first line."
+                                        self._record_obs(turn, stripped, obs, command=False)
+                                    else:
+                                        self._client.abort(genkey)
+                                        aborted = True
+                                        self._log.command(f"[block] {cmd_line}")
+                                        self._log.system(f"Abort sent (genkey={genkey}), body block closed")
+                                        result = self._dispatch.dispatch_block(cmd_line, body)
+                                        if cmd_line.lower().startswith("/telegram "):
+                                            self._pending_tg.clear()
+                                        prose_lines = 0
+                                        self._record_obs(turn, cmd_line, result, command=True)
+                                    break
+                                else:
+                                    body_block_lines.append(completed)
+                                    continue
+                            elif stripped in ('"""', "'''", "```") and not in_shell_block:
+                                in_body_block = True
+                                body_block_delim = stripped
+                                body_block_lines = []
                                 continue
 
                         if self._dispatch.pending is not None:

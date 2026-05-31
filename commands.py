@@ -189,6 +189,91 @@ class CommandDispatcher:
             self._xmr = None
 
     # -----------------------------------------------------------------------
+    # Body-block dispatch (multiline command content)
+    # -----------------------------------------------------------------------
+
+    def dispatch_block(self, line: str, body: str) -> str:
+        """
+        Dispatch a command that arrived inside a \"\"\" / ``` body block.
+
+        *line* is the first line of the block (command + args).
+        *body* is everything between line 1 and the closing delimiter.
+
+        Commands that understand multiline content (/mb post, /mb comment,
+        /mb reply, /telegram) use *body* as their content.  Everything else
+        falls back to normal single-line dispatch and ignores the body.
+        """
+        parts = line.split(None, 1)
+        if not parts:
+            return "[block] Empty — put the command on the first line inside the block."
+        cmd  = parts[0].lower()
+        rest = parts[1] if len(parts) > 1 else ""
+
+        if cmd == "/mb":
+            return self._mb_block(rest, body)
+        if cmd == "/telegram":
+            text = (rest.strip() + "\n" + body).strip() if body.strip() else rest.strip()
+            return self._telegram(text.split(" ", 1) if " " in text else [text])
+        if cmd in ("$", "#") and self._frwx:
+            return self._shell_block(cmd, rest, body)
+        # Fall back: dispatch the command line as-is, body ignored.
+        return self.dispatch(line) or "[block] Command not recognised."
+
+    def _mb_block(self, rest: str, body: str) -> str:
+        """Handle /mb commands that arrived with a multiline body."""
+        args = rest.split()
+        if not args:
+            return '[mb] Usage in block:\n  """\n  /mb post <submolt> <title>\n  <body>\n  """'
+        sub = args[0].lower()
+        rest_args = args[1:]
+
+        if sub == "post":
+            if not rest_args:
+                return "[mb] Usage: /mb post <submolt> <title> (body follows in block)"
+            submolt = rest_args[0]
+            title   = " ".join(rest_args[1:]) if len(rest_args) > 1 else ""
+            return mb_mod.create_post(submolt, title, body)
+
+        if sub == "comment":
+            if not rest_args:
+                return "[mb] Usage: /mb comment <post_id> (body follows in block)"
+            return mb_mod.comment(rest_args[0], body)
+
+        if sub == "reply":
+            if len(rest_args) < 2:
+                return "[mb] Usage: /mb reply <post_id> <comment_id> (body follows in block)"
+            return mb_mod.comment(rest_args[0], body, parent_id=rest_args[1])
+
+        # Not a body-aware subcommand — fall back to normal dispatch.
+        return self._mb_dispatch(args)
+
+    def _shell_block(self, prefix: str, cmd: str, body: str) -> str:
+        """Run a shell block: pipe *body* as stdin to *cmd*, or run as bash script."""
+        import shlex, tempfile, os
+        cmd = cmd.strip()
+        if cmd:
+            # Write body to a temp file and pipe it as stdin.
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".tmp",
+                                             delete=False, encoding="utf-8") as f:
+                f.write(body)
+                fname = f.name
+            actual = f"{prefix} {cmd} < {shlex.quote(fname)}"
+        else:
+            # No command specified — execute body as a bash script.
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".sh",
+                                             delete=False, encoding="utf-8") as f:
+                f.write(body)
+                fname = f.name
+            actual = f"{prefix} bash {shlex.quote(fname)}"
+        try:
+            return self.dispatch(actual) or "[block] Shell block executed."
+        finally:
+            try:
+                os.unlink(fname)
+            except OSError:
+                pass
+
+    # -----------------------------------------------------------------------
     # Normal command dispatch
     # -----------------------------------------------------------------------
 

@@ -83,6 +83,20 @@ this narration stays in context and seeds your next step. \
 After getting a result, briefly note what you found before continuing. \
 Example: "Feed looks quiet — I'll check notifications next." then the command.
 
+For multiline content (long posts, multi-paragraph comments, messages), use a \
+body block — triple-quotes or triple-backticks as the delimiter, command on the \
+first line inside, content below:
+
+  \"\"\"
+  /mb post m:general My Post Title
+  First paragraph here.
+
+  Second paragraph. Lines starting with /, $, or # are safe inside a block.
+  \"\"\"
+
+The block executes when the closing delimiter is reached. \
+Use /mb post, /mb comment, /mb reply, and /telegram inside body blocks.
+
 Use <think>...</think> to reason silently before acting. \
 Commands inside think blocks are ignored.
 
