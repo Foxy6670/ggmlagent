@@ -219,6 +219,7 @@ class Agent:
         in_shell_block  = False
         shell_buffer:  list[str] = []
         in_body_block   = False
+        body_block_is_cmd = False   # True = ``` (execute), False = """ / ''' (text only)
         body_block_delim = ""
         body_block_lines: list[str] = []
 
@@ -340,39 +341,50 @@ class Agent:
                                 shell_buffer = []
                                 continue
 
-                            # Body blocks: """ or ''' or ``` (bare, no language tag)
-                            # act as delimiters for multiline command content.
-                            # Lines inside are accumulated verbatim — no command
-                            # detection — so posts, comments, and messages can span
-                            # multiple paragraphs without accidentally triggering
-                            # commands that start with /, $, or #.
-                            # First line inside = command + args; remaining = body.
+                            # ``` (bare) = command block: first line is the command,
+                            # remaining lines are the body.  Execute on close.
+                            # """ or ''' = text block: content is logged but never
+                            # executed — safe for drafts, notes, and long data.
                             elif in_body_block:
                                 if stripped == body_block_delim:
                                     _trim_agent_text(turn, stripped)
                                     in_body_block = False
-                                    cmd_line = body_block_lines[0].strip() if body_block_lines else ""
-                                    body = "\n".join(body_block_lines[1:])
+                                    lines = body_block_lines[:]
                                     body_block_lines = []
-                                    if not cmd_line:
-                                        obs = "[system] Body block closed with no command on the first line."
-                                        self._record_obs(turn, stripped, obs, command=False)
+                                    if body_block_is_cmd:
+                                        cmd_line = lines[0].strip() if lines else ""
+                                        body = "\n".join(lines[1:])
+                                        if not cmd_line:
+                                            obs = "[system] Command block closed with no command on the first line."
+                                            self._record_obs(turn, stripped, obs, command=False)
+                                        else:
+                                            self._client.abort(genkey)
+                                            aborted = True
+                                            self._log.command(f"[block] {cmd_line}")
+                                            self._log.system(f"Abort sent (genkey={genkey}), command block closed")
+                                            result = self._dispatch.dispatch_block(cmd_line, body)
+                                            if cmd_line.lower().startswith("/telegram "):
+                                                self._pending_tg.clear()
+                                            prose_lines = 0
+                                            self._record_obs(turn, cmd_line, result, command=True)
                                     else:
-                                        self._client.abort(genkey)
-                                        aborted = True
-                                        self._log.command(f"[block] {cmd_line}")
-                                        self._log.system(f"Abort sent (genkey={genkey}), body block closed")
-                                        result = self._dispatch.dispatch_block(cmd_line, body)
-                                        if cmd_line.lower().startswith("/telegram "):
-                                            self._pending_tg.clear()
-                                        prose_lines = 0
-                                        self._record_obs(turn, cmd_line, result, command=True)
+                                        n = len(lines)
+                                        self._log.system(f"Text block received: {n} line(s)")
+                                        obs = f"[text block: {n} line{'s' if n != 1 else ''}]"
+                                        self._record_obs(turn, stripped, obs, command=False)
                                     break
                                 else:
                                     body_block_lines.append(completed)
                                     continue
-                            elif stripped in ('"""', "'''", "```") and not in_shell_block:
+                            elif stripped == "```" and not in_shell_block:
                                 in_body_block = True
+                                body_block_is_cmd = True
+                                body_block_delim = "```"
+                                body_block_lines = []
+                                continue
+                            elif stripped in ('"""', "'''") and not in_shell_block:
+                                in_body_block = True
+                                body_block_is_cmd = False
                                 body_block_delim = stripped
                                 body_block_lines = []
                                 continue
@@ -455,42 +467,28 @@ class Agent:
                             break
 
                         elif _is_gt_command(stripped, self._frwx):
-                            # Model prefixed command with "> " (CMD echo format) — strip and execute
                             actual = stripped[2:]
-                            _trim_agent_text(turn, actual)
+                            _trim_agent_text(turn, stripped)
                             self._client.abort(genkey)
                             aborted = True
-                            self._log.system(f"Abort sent (genkey={genkey}), stripped '> ' prefix, executing {actual!r}")
-                            self._log.command(actual)
-                            result = self._run_command(actual)
-                            if actual.lower().startswith("/telegram "):
-                                self._pending_tg.clear()
-                            prose_lines = 0
-                            self._record_obs(turn, actual, result, command=True)
+                            self._log.system(f"Abort sent (genkey={genkey}), bare '> ' command rejected")
+                            obs = (
+                                f"[system] Commands must be wrapped in triple-tick blocks, not prefixed with '> '. "
+                                f"Write:\n```\n{actual}\n```\nReissue the command now."
+                            )
+                            self._record_obs(turn, stripped, obs, command=False)
                             break
 
                         elif is_command_line(completed, self._frwx):
                             _trim_agent_text(turn, stripped)
                             self._client.abort(genkey)
                             aborted = True
-                            # Catch hallucinated Telegram headers smuggled inside /telegram body
-                            if stripped.lower().startswith("/telegram ") and \
-                                    _is_fake_incoming_telegram(stripped[len("/telegram "):].lstrip()):
-                                self._log.system(f"Abort sent (genkey={genkey}), /telegram body contains fake header")
-                                obs = (
-                                    "[system] Your /telegram message started with a fake Telegram header. "
-                                    "Send only your own words — never include [name @ Telegram]: in the message. "
-                                    "Continue your task."
-                                )
-                                self._record_obs(turn, stripped, obs, command=False)
-                                break
-                            self._log.command(stripped)
-                            self._log.system(f"Abort sent (genkey={genkey}), executing command")
-                            result = self._run_command(stripped)
-                            if stripped.lower().startswith("/telegram "):
-                                self._pending_tg.clear()
-                            prose_lines = 0
-                            self._record_obs(turn, stripped, result, command=True)
+                            self._log.system(f"Abort sent (genkey={genkey}), bare command rejected (not in block)")
+                            obs = (
+                                f"[system] Commands must be wrapped in triple-tick blocks, not issued as bare lines. "
+                                f"Write:\n```\n{stripped}\n```\nReissue the command now."
+                            )
+                            self._record_obs(turn, stripped, obs, command=False)
                             break
 
                         elif stripped == "<|eoc|>":
