@@ -1066,7 +1066,7 @@ _SHELL_CMD_RE = re.compile(r"^(\$ \S|# [^#\s])")
 # Markdown fenced code blocks. Modern instruct models default to ```bash / ```sh
 # for shell commands; treat those (and bare ``` with no language) as shell
 # containers. Other languages (```python, ```json, ...) stay prose for now.
-_SHELL_FENCE_OPEN_RE = re.compile(r"^```\s*(bash|sh|shell)?\s*$", re.IGNORECASE)
+_SHELL_FENCE_OPEN_RE = re.compile(r"^```\s*(bash|sh|shell)\s*$", re.IGNORECASE)
 _FENCE_CLOSE_RE      = re.compile(r"^```\s*$")
 
 
