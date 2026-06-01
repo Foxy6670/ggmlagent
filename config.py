@@ -46,6 +46,10 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_HISTORY   = "tg_chat_history.jsonl"  # all Telegram messages, in and out
 
+# Boonie's SSH onion address — set BOONIE_ONION in .secrets (local machine only).
+# Format: boonie@<address>.onion
+BOONIE_ONION = os.environ.get("BOONIE_ONION", "")
+
 MAX_RESPONSE_TOKENS = 4096
 HORDE_API_KEY  = os.environ.get("HORDE_API_KEY", "0000000000")  # set in .secrets when using Horde
 # Comma-separated list of Horde model names to request, e.g. "koboldcpp/Qwen3-14B".

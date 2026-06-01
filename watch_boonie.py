@@ -15,7 +15,9 @@ import re
 import subprocess
 import sys
 
-ONION  = "boonie@maxbqmttbj77owwektjw7tctu6fcqrxkg3675z5fpnvwthifky2bcnqd.onion"
+from config import BOONIE_ONION
+
+ONION  = BOONIE_ONION
 SSH    = ["ssh", "-o", "ProxyCommand=nc -x 127.0.0.1:9050 %h %p", ONION]
 LOGDIR = "ggmlagent/boonie/logs"
 
