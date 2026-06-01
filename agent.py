@@ -137,7 +137,7 @@ class Agent:
                         _EOC_MARKER in obs for obs in self._history[-1].observations
                     ):
                         eoc_streak += 1
-                        pruned = self._history.pop()
+                        self._history.pop()
                         self._log.system(
                             f"Pruned <|eoc|> correction turn from history "
                             f"(streak={eoc_streak}, history now {len(self._history)} turns)"
