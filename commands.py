@@ -748,6 +748,9 @@ class CommandDispatcher:
             if sub == "home":
                 return mb_mod.home()
 
+            if sub == "notifications" and rest and rest[0] == "clear":
+                return mb_mod.clear_all_notifications()
+
             if sub == "feed":
                 # /mb feed [sort] [submolt=<name>] [next=<cursor>] [filter=following]
                 sort     = "new"

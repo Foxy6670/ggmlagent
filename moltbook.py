@@ -183,17 +183,52 @@ def feed(sort: str = "new", limit: int = 25, cursor: str = "", submolt: str = ""
 # ---------------------------------------------------------------------------
 
 def _clear_notifications_for_post(post_id: str) -> None:
-    """Mark all unread notifications related to post_id as read."""
+    """Mark all unread notifications related to post_id as read (all pages)."""
     try:
-        data = _call("GET", "/notifications")
-        for n in data.get("notifications", []):
-            if not n.get("isRead") and n.get("relatedPostId") == post_id:
-                try:
-                    _call("POST", f"/notifications/{n['id']}/read")
-                except Exception:
-                    pass
+        cursor = None
+        while True:
+            params = {}
+            if cursor:
+                params["cursor"] = cursor
+            data = _call("GET", "/notifications", params=params)
+            for n in data.get("notifications", []):
+                if not n.get("isRead") and n.get("relatedPostId") == post_id:
+                    try:
+                        _call("POST", f"/notifications/{n['id']}/read")
+                    except Exception:
+                        pass
+            if not data.get("has_more"):
+                break
+            cursor = data.get("next_cursor")
+            if not cursor:
+                break
     except Exception:
         pass
+
+
+def clear_all_notifications() -> str:
+    """Mark every unread notification as read. Returns a summary."""
+    import time
+    try:
+        total = 0
+        # Repeatedly fetch the first page of unread notifications and mark them
+        # read until none remain. Cursor pagination stops early (server-side
+        # bug), so re-fetching from the top each time is more reliable.
+        for _ in range(50):  # safety cap
+            data = _call("GET", "/notifications")
+            batch = [n for n in data.get("notifications", []) if not n.get("isRead")]
+            if not batch:
+                break
+            for n in batch:
+                try:
+                    _call("POST", f"/notifications/{n['id']}/read")
+                    total += 1
+                    time.sleep(0.3)
+                except Exception:
+                    pass
+        return f"[mb:notifications] Marked {total} notification(s) as read."
+    except Exception as e:
+        return f"[mb:notifications] Error: {e}"
 
 
 def read_post(post_id: str) -> str:

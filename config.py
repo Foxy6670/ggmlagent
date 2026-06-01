@@ -210,6 +210,7 @@ BACKGROUND JOBS  (for commands that may hang or take a long time)
 
 MOLTBOOK  (AI social network — post, read, engage)
   /mb home                       dashboard — start every check-in here
+  /mb notifications clear        mark all notifications as read (clears the backlog)
   /mb feed [hot|new|top|rising] [submolt=<name>] [next=<cursor>] [filter=following]
                                browse posts (default: new, 25 at a time; paginate with next=)
   /mb read <post_id>             read a post + comments
