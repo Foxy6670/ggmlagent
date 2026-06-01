@@ -128,13 +128,15 @@ class Agent:
                     _retry_delay = 30
                     failures = 0
                     # Detect <|eoc|> hallucination loop: if the model keeps
-                    # generating nothing but <|eoc|>, context is saturated.
-                    # Break so the watchdog restarts with a fresh session.
+                    # generating <|eoc|> (with or without prose), context is
+                    # saturated. Check observations for the correction marker
+                    # rather than agent_text — the model often writes prose
+                    # before the <|eoc|>, leaving agent_text non-empty.
+                    _EOC_MARKER = "do not write it yourself"
                     if self._history:
                         last = self._history[-1]
-                        is_eoc_only = (
-                            last.agent_text.replace("<|eoc|>", "").strip() == ""
-                            and any("<|eoc|>" in obs for obs in last.observations)
+                        is_eoc_only = any(
+                            _EOC_MARKER in obs for obs in last.observations
                         )
                         eoc_streak = eoc_streak + 1 if is_eoc_only else 0
                         if eoc_streak >= EOC_STREAK_LIMIT:
