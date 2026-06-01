@@ -114,6 +114,8 @@ class Agent:
         self._log.system("=== SESSION START ===")
         _retry_delay = 30
         failures = 0
+        eoc_streak = 0
+        EOC_STREAK_LIMIT = 5
         # Backoff schedule 30,60,120,240,300,300,300,300,300,300 → ~32 min
         # of total downtime before we exit. Watchdog or operator restarts.
         MAX_FAILURES = 10
@@ -125,6 +127,25 @@ class Agent:
                     self._step()
                     _retry_delay = 30
                     failures = 0
+                    # Detect <|eoc|> hallucination loop: if the model keeps
+                    # generating nothing but <|eoc|>, context is saturated.
+                    # Break so the watchdog restarts with a fresh session.
+                    if self._history:
+                        last = self._history[-1]
+                        is_eoc_only = (
+                            last.agent_text.replace("<|eoc|>", "").strip() == ""
+                            and any("<|eoc|>" in obs for obs in last.observations)
+                        )
+                        eoc_streak = eoc_streak + 1 if is_eoc_only else 0
+                        if eoc_streak >= EOC_STREAK_LIMIT:
+                            msg = (
+                                f"<|eoc|> hallucination loop detected "
+                                f"({eoc_streak} consecutive turns) — "
+                                "context likely saturated, ending session."
+                            )
+                            print(f"\n{_YELLOW}[agent] {msg}{_RESET}", flush=True)
+                            self._log.system(msg)
+                            return
                     continue
                 except requests.exceptions.ConnectionError as e:
                     err = e
