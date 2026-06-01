@@ -127,27 +127,31 @@ class Agent:
                     self._step()
                     _retry_delay = 30
                     failures = 0
-                    # Detect <|eoc|> hallucination loop: if the model keeps
-                    # generating <|eoc|> (with or without prose), context is
-                    # saturated. Check observations for the correction marker
-                    # rather than agent_text — the model often writes prose
-                    # before the <|eoc|>, leaving agent_text non-empty.
+                    # If the last turn was an <|eoc|> correction, prune it
+                    # from history — it's pure noise that makes saturation
+                    # worse. The model retries with a slightly lighter context.
+                    # After EOC_STREAK_LIMIT consecutive prunes with no recovery,
+                    # context is truly saturated; end session for watchdog restart.
                     _EOC_MARKER = "do not write it yourself"
-                    if self._history:
-                        last = self._history[-1]
-                        is_eoc_only = any(
-                            _EOC_MARKER in obs for obs in last.observations
+                    if self._history and any(
+                        _EOC_MARKER in obs for obs in self._history[-1].observations
+                    ):
+                        eoc_streak += 1
+                        pruned = self._history.pop()
+                        self._log.system(
+                            f"Pruned <|eoc|> correction turn from history "
+                            f"(streak={eoc_streak}, history now {len(self._history)} turns)"
                         )
-                        eoc_streak = eoc_streak + 1 if is_eoc_only else 0
                         if eoc_streak >= EOC_STREAK_LIMIT:
                             msg = (
-                                f"<|eoc|> hallucination loop detected "
-                                f"({eoc_streak} consecutive turns) — "
-                                "context likely saturated, ending session."
+                                f"<|eoc|> loop: {eoc_streak} consecutive prunes, "
+                                "context saturated — ending session."
                             )
                             print(f"\n{_YELLOW}[agent] {msg}{_RESET}", flush=True)
                             self._log.system(msg)
                             return
+                    else:
+                        eoc_streak = 0
                     continue
                 except requests.exceptions.ConnectionError as e:
                     err = e
