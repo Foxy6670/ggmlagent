@@ -914,7 +914,9 @@ class CommandDispatcher:
             if not args:
                 return "[telegram] Usage: /telegram @foxo <message>"
 
-        text = " ".join(args)
+        text = " ".join(args).replace("<|eoc|>", "").strip()
+        if not text:
+            return "[telegram] Empty message after stripping internal tokens."
         if text == self._last_tg_text:
             return "[telegram] Duplicate — you already sent that exact message. Continue your task."
         elapsed = time.time() - self._last_tg_time
