@@ -50,7 +50,7 @@ TELEGRAM_HISTORY   = "tg_chat_history.jsonl"  # all Telegram messages, in and ou
 # Format: boonie@<address>.onion
 BOONIE_ONION = os.environ.get("BOONIE_ONION", "")
 
-MAX_RESPONSE_TOKENS = 4096
+MAX_RESPONSE_TOKENS = 6144
 HORDE_API_KEY  = os.environ.get("HORDE_API_KEY", "0000000000")  # set in .secrets when using Horde
 # Comma-separated list of Horde model names to request, e.g. "koboldcpp/Qwen3-14B".
 # Empty = any available worker.

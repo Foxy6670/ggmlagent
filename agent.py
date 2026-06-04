@@ -542,7 +542,7 @@ class Agent:
 
                         else:
                             prose_lines += 1
-                            if prose_lines >= 10:
+                            if prose_lines >= 32:
                                 self._client.abort(genkey)
                                 aborted = True
                                 obs = (
