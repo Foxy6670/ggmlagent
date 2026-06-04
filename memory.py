@@ -116,6 +116,17 @@ class PersistentMemory:
         existing = self._path.read_text(encoding="utf-8") if self._path.exists() else ""
         new_line = text.rstrip("\n") + "\n"
         self._path.write_text(new_line + existing, encoding="utf-8")
+        count = len(self._all_lines())
+        if count >= _PAGE_LINES:
+            return (
+                f"[pmem] Memory saved. ({count} entries — over one page! "
+                "Use /pmem d <line> to prune old entries so everything fits on page 1.)"
+            )
+        if count >= 100:
+            return (
+                f"[pmem] Memory saved. ({count} entries — getting long. "
+                "Consider pruning old entries with /pmem d <line> to stay under 100.)"
+            )
         return "[pmem] Memory saved."
 
     def update(self, line: int, text: str) -> str:

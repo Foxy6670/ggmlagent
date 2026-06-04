@@ -216,6 +216,13 @@ class CommandDispatcher:
             return self._telegram(text.split(" ", 1) if " " in text else ([text] if text else []))
         if cmd in ("$", "#") and self._frwx:
             return self._shell_block(cmd, rest, body)
+        if cmd in ("/pmem", "/pm"):
+            if rest.lower().startswith("w") and body.strip():
+                inline = rest[1:].strip()
+                body_text = " ".join(l.strip() for l in body.strip().splitlines() if l.strip())
+                text = (inline + " " + body_text).strip() if inline else body_text
+                return self._pmem("/pmem", ["w", text])
+            return self.dispatch(line)
         if cmd == "/patch":
             if body.strip():
                 # Feed body through the streaming accumulator all at once.
