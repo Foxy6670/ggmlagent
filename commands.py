@@ -216,6 +216,19 @@ class CommandDispatcher:
             return self._telegram(text.split(" ", 1) if " " in text else ([text] if text else []))
         if cmd in ("$", "#") and self._frwx:
             return self._shell_block(cmd, rest, body)
+        if cmd == "/patch":
+            if body.strip():
+                # Feed body through the streaming accumulator all at once.
+                # _patch_input returns "" for each batch line and the result
+                # string when *** End Patch is reached.
+                self.pending = PendingEdit(mode="patch", file_path="")
+                for ln in body.rstrip().splitlines():
+                    result = self._patch_input(ln)
+                    if result:  # *** End Patch was in the body
+                        return result
+                # Model omitted the sentinel — fire it now.
+                return self._patch_input(END_PATCH)
+            return self._begin_patch([])
         # Fall back: dispatch the command line as-is, body ignored.
         return self.dispatch(line) or "[block] Command not recognised."
 
