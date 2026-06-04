@@ -375,17 +375,24 @@ class Agent:
                             # executed — safe for drafts, notes, and long data.
                             elif in_body_block:
                                 if stripped == body_block_delim:
-                                    _trim_agent_text(turn, stripped)
                                     in_body_block = False
-                                    lines = body_block_lines[:]
+                                    # Strip <|eoc|> lines — model emits this as a stop
+                                    # signal before the closing fence; keep it out of
+                                    # command and body content.
+                                    lines = [l for l in body_block_lines
+                                             if l.strip() != "<|eoc|>"]
                                     body_block_lines = []
                                     if body_block_is_cmd:
                                         cmd_line = lines[0].strip() if lines else ""
                                         body = "\n".join(lines[1:])
                                         if not cmd_line:
+                                            _trim_agent_text(turn, stripped)
                                             obs = "[system] Command block closed with no command on the first line."
                                             self._record_obs(turn, stripped, obs, command=False)
                                         else:
+                                            # Don't trim the closing fence: _record_obs
+                                            # appends <|eoc|> after it, giving the correct
+                                            # training layout: ``` /cmd body ``` <|eoc|>
                                             self._client.abort(genkey)
                                             aborted = True
                                             self._log.command(f"[block] {cmd_line}")
@@ -396,6 +403,7 @@ class Agent:
                                             prose_lines = 0
                                             self._record_obs(turn, cmd_line, result, command=True)
                                     else:
+                                        _trim_agent_text(turn, stripped)
                                         n = len(lines)
                                         self._log.system(f"Text block received: {n} line(s)")
                                         obs = f"[text block: {n} line{'s' if n != 1 else ''}]"
@@ -608,14 +616,16 @@ class Agent:
         # max_tokens), dispatch whatever was accumulated.
         if not aborted and in_body_block and body_block_is_cmd:
             tail = cur_line.strip()
-            if tail and tail != body_block_delim:
+            if tail and tail != body_block_delim and tail != "<|eoc|>":
                 body_block_lines.append(cur_line.rstrip())
             in_body_block = False
-            lines = body_block_lines[:]
+            lines = [l for l in body_block_lines if l.strip() != "<|eoc|>"]
             body_block_lines = []
             cmd_line = lines[0].strip() if lines else ""
             body = "\n".join(lines[1:])
             if cmd_line:
+                # Synthesize the closing fence so <|eoc|> lands after it.
+                turn.agent_text = turn.agent_text.rstrip("\n") + f"\n{body_block_delim}\n"
                 self._log.command(f"[block-eos] {cmd_line}")
                 self._log.system(f"Executing command block at end-of-stream (genkey={genkey})")
                 result = self._dispatch.dispatch_block(cmd_line, body)
