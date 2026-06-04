@@ -118,6 +118,15 @@ class PersistentMemory:
         self._path.write_text(new_line + existing, encoding="utf-8")
         return "[pmem] Memory saved."
 
+    def update(self, line: int, text: str) -> str:
+        lines = self._all_lines()
+        idx = line - 1
+        if idx < 0 or idx >= len(lines):
+            return f"[pmem] No line {line} (total lines: {len(lines)})"
+        lines[idx] = text.rstrip("\n") + "\n"
+        self._path.write_text("".join(lines), encoding="utf-8")
+        return f"[pmem:{line}] Updated."
+
     def delete(self, line: int) -> str:
         lines = self._all_lines()
         idx = line - 1

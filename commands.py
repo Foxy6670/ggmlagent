@@ -416,11 +416,19 @@ class CommandDispatcher:
         if cmd == "/pgup":   return self.pmem.page_up()
         if cmd == "/pgdown": return self.pmem.page_down()
         if not args:
-            raise CommandError("[pmem] Usage: /pmem r | /pmem w <text> | /pmem d <line>")
+            raise CommandError("[pmem] Usage: /pmem r | /pmem w <text> | /pmem w <line> <text> | /pmem d <line>")
         sub = args[0].lower()
         if sub == "r": return self.pmem.read_page()
         if sub == "w":
+            # /pmem w <n> <text>  — update line n in place
+            if len(args) >= 3 and args[1].isdigit():
+                line = int(args[1])
+                text = " ".join(args[2:])
+                return self.pmem.update(line, text)
+            # /pmem w <text>  — prepend new entry (no line number needed)
             text = " ".join(args[1:])
+            if not text.strip():
+                raise CommandError("[pmem] Usage: /pmem w <text>")
             if len(text) > 300:
                 text = text[:297] + "…"
                 result = self.pmem.write(text)
