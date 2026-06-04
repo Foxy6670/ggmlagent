@@ -387,7 +387,7 @@ class CommandDispatcher:
             raise CommandError("[cmem] Usage: /cmem r|w|d <line> [text]")
         sub = args[0].lower()
         if sub == "r":
-            return self.cmem.read(_int_arg(args, 1, "/cmem r <line>"))
+            return "[cmem] Context memory is already visible in your prompt — you do not need to read it. Use /cmem w <line> <text> to write or /cmem d <line> to delete."
         if sub == "w":
             line = _int_arg(args, 1, "/cmem w <line> <text>")
             return self.cmem.write(line, " ".join(args[2:]))
