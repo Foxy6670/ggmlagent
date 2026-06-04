@@ -1316,6 +1316,7 @@ class Agent:
             messages = self._build_messages(compress=True)
 
         self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
+        self._log.system(f"Context: {self._last_ctx_pct}% used ({N_CTX} token window)")
         return messages
 
 
