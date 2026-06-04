@@ -79,6 +79,7 @@ CHAT_DEFAULTS = {
     "temperature": 0.5,
     "top_p":       0.9,
     "stream":      True,
+    "stop":        ["<|eoc|>"],
 }
 
 SYSTEM_PROMPT = """\

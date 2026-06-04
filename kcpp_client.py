@@ -119,6 +119,7 @@ class KoboldClient:
                 "max_context_length": 4096,
                 "temperature":        overrides.get("temperature", CHAT_DEFAULTS.get("temperature", 0.7)),
                 "top_p":              overrides.get("top_p",        CHAT_DEFAULTS.get("top_p", 0.9)),
+                "stop_sequence":      ["<|eoc|>"],
             },
             "models": HORDE_MODELS if HORDE_MODELS else [],
         }
