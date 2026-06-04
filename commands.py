@@ -213,7 +213,7 @@ class CommandDispatcher:
             return self._mb_block(rest, body)
         if cmd == "/telegram":
             text = (rest.strip() + "\n" + body).strip() if body.strip() else rest.strip()
-            return self._telegram(text.split(" ", 1) if " " in text else [text])
+            return self._telegram(text.split(" ", 1) if " " in text else ([text] if text else []))
         if cmd in ("$", "#") and self._frwx:
             return self._shell_block(cmd, rest, body)
         # Fall back: dispatch the command line as-is, body ignored.
