@@ -109,9 +109,19 @@ class Agent:
     # Entry point
     # ------------------------------------------------------------------
 
+    def _init_session(self):
+        """Pre-populate context memory with facts Boonie always needs."""
+        addr = self._dispatch.dispatch("/wallet address")
+        if addr and not addr.startswith("[wallet] "):
+            self._cmem.write(1, f"My XMR wallet address: {addr}")
+            self._log.system(f"Session init: wallet address written to cmem slot 1")
+        else:
+            self._log.system(f"Session init: wallet address unavailable ({addr})")
+
     def run(self):
         _print_banner()
         self._log.system("=== SESSION START ===")
+        self._init_session()
         _retry_delay = 30
         failures = 0
         eoc_streak = 0
