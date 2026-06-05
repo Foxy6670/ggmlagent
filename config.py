@@ -5,7 +5,7 @@ from pathlib import Path
 # Real values live in .secrets (gitignored); see .secrets.example for the
 # schema.  Existing environment variables take precedence — nothing here
 # overrides what the shell already set.
-_secrets_path = Path(__file__).parent / ".secrets"
+_secrets_path = Path.cwd() / ".secrets"
 if _secrets_path.exists():
     for _line in _secrets_path.read_text(encoding="utf-8").splitlines():
         _line = _line.strip()
