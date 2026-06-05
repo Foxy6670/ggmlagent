@@ -43,9 +43,9 @@ _GREEN  = "\033[32m"
 _YELLOW = "\033[33m"
 _RED    = "\033[31m"
 
-_TRIM_HEADROOM   = MAX_RESPONSE_TOKENS
-_COMPACT_TRIGGER = 8     # compact when history exceeds this many turns
-_COMPACT_BATCH   = 6     # turns to fold into each compaction summary
+_TRIM_HEADROOM        = MAX_RESPONSE_TOKENS
+_COMPACT_THRESHOLD    = 80   # % context used that triggers a full-history compaction
+_COMPACT_KEEP_RECENT  = 2    # turns to leave uncompacted for immediate continuity
 _CHARS_PER_TOKEN = 3.5   # conservative fallback when tokenize is unavailable
 _FG_WAIT         = 60.0  # seconds /fg blocks before returning "still running"
 
@@ -1295,30 +1295,35 @@ class Agent:
         def _fits(msgs: list[dict]) -> bool:
             return self._token_count(msgs) <= budget
 
-        # 1. Uncompressed — ideal path
+        # 1. Uncompressed — ideal path; also used to measure current ctx %
         messages = self._build_messages(compress=False)
+        current_pct = round(self._token_count(messages) / N_CTX * 100)
+
+        # 2. Proactive full-history compaction at threshold — keeps one clean
+        #    summary instead of accumulating many small compaction stubs.
+        if current_pct >= _COMPACT_THRESHOLD and len(self._history) > _COMPACT_KEEP_RECENT:
+            n = len(self._history) - _COMPACT_KEEP_RECENT
+            msg = f"Context at {current_pct}% — compacting {n} turns into summary."
+            print(f"{_YELLOW}[agent] {msg}{_RESET}", flush=True)
+            self._log.system(msg)
+            self._compact_history(n)
+            messages = self._build_messages(compress=False)
+
         if _fits(messages):
             self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
             return messages
 
-        # 2. Compressed observations
+        # 3. Compressed observations
         messages = self._build_messages(compress=True)
         if _fits(messages):
             self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
             return messages
 
-        # 3 & 4. Context still too large: alternate compaction and hard-drop
+        # 4. Hard-drop oldest turns — last resort if compaction failed or window
+        #    is still too small after a full compact.
         while len(self._history) > 1:
             if _fits(messages):
                 break
-
-            # Try LLM compaction first if we have enough turns
-            if len(self._history) >= _COMPACT_TRIGGER:
-                if self._compact_history(_COMPACT_BATCH):
-                    messages = self._build_messages(compress=True)
-                    continue
-
-            # Fall back to hard-drop of oldest turn
             dropped = self._history.pop(0)
             msg = f"Context full — dropped oldest turn ({len(dropped.agent_text)} chars)."
             print(f"{_YELLOW}[agent] {msg}{_RESET}", flush=True)
