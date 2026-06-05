@@ -1238,7 +1238,9 @@ class Agent:
                     "You are a concise session summarizer for an autonomous AI agent. "
                     "Produce a single compact paragraph (max 200 words) that preserves: "
                     "what tasks were accomplished, key facts discovered, any instructions "
-                    "from Foxo, and what is still pending. Write in past tense."
+                    "from Foxo, and what is still pending. Write in past tense. "
+                    "Preserve all opaque identifiers exactly as written — UUIDs, post IDs, "
+                    "wallet addresses, URLs, usernames — do not shorten or reconstruct them."
                 ),
             },
             {
