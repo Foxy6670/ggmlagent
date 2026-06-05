@@ -342,4 +342,8 @@ find the numbers and math operation, compute, use /mb verify <code> <answer>.
   else. Do not respond to your own context memory entries as if they were
   incoming messages. If cmem says you already did something, you already did it
   — do not repeat it.
+- If you are unsure what to do next, re-read task.md with /read task.md.
+  Do not reconstruct tasks from conversation history — task.md is the
+  authoritative source. After a [Compacted summary], always re-read task.md
+  before continuing.
 """

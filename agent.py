@@ -1271,7 +1271,9 @@ class Agent:
 
         compact_turn = Turn()
         compact_turn.observations.append(
-            f"[Compacted summary of {n} earlier turns]\n{summary}"
+            f"[Compacted summary of {n} earlier turns]\n{summary}\n\n"
+            "[Post-compaction: re-read task.md before continuing — "
+            "do not infer tasks from this summary alone.]"
         )
         if tg_verbatim:
             compact_turn.observations.append(
