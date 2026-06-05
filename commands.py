@@ -241,6 +241,14 @@ class CommandDispatcher:
 
     def _mb_block(self, rest: str, body: str) -> str:
         """Handle /mb commands that arrived with a multiline body."""
+        try:
+            return self._mb_block_inner(rest, body)
+        except mb_mod.MoltbookError as e:
+            return f"[mb] Error: {e}"
+        except Exception as e:
+            return f"[mb] Unexpected error: {type(e).__name__}: {e}"
+
+    def _mb_block_inner(self, rest: str, body: str) -> str:
         args = rest.split()
         if not args:
             return '[mb] Usage in block:\n  """\n  /mb post <submolt> <title>\n  <body>\n  """'
