@@ -66,9 +66,15 @@ def register(name: str, description: str) -> str:
         json={"name": name, "description": description},
         timeout=20,
     )
+    if not resp.ok:
+        try:
+            err = resp.json()
+            return f"[mb] Registration failed: {err.get('message', resp.status_code)}"
+        except Exception:
+            return f"[mb] Registration failed: HTTP {resp.status_code}"
     data = resp.json()
-    if not data.get("success", True) and "error" in data:
-        return f"[mb] Registration failed: {data['error']}"
+    if not data.get("success", False):
+        return f"[mb] Registration failed: {data.get('message', 'unknown error')}"
     agent = data.get("agent", {})
     lines = [
         "[mb] Registration successful!",
