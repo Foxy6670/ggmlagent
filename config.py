@@ -63,9 +63,9 @@ CMD_TIMEOUT = 300        # seconds before a hanging command is auto-backgrounded
 # KCPP port fails fast rather than stalling for the full read window.
 # 30 s covers Tor circuit establishment; LAN failures are detected in <1 s.
 KCPP_CONNECT_TIMEOUT = 30
-# How long to wait for the first token after connect (covers full 32k prefill
-# which takes ~60 s on TUF; +30 s margin).
-KCPP_FIRST_TOKEN_TIMEOUT = 90
+# How long to wait for the first token after connect (covers full prefill;
+# override via KCPP_FIRST_TOKEN_TIMEOUT=<seconds> in .secrets for slow hardware).
+KCPP_FIRST_TOKEN_TIMEOUT = int(os.environ.get("KCPP_FIRST_TOKEN_TIMEOUT", "90"))
 # Max gap between consecutive tokens once generation is running.
 # Normal rate is ~3 tok/s (333 ms); 15 s = 45× headroom for brief stalls.
 KCPP_INTER_TOKEN_TIMEOUT = 15
