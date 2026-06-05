@@ -25,7 +25,8 @@ KCPP_TOKENIZE_URL = f"{KCPP_BASE_URL}/api/extra/tokenize"
 # KCPP can accept causes silent server-side truncation: the prompt the
 # model actually sees gets its head or tail chopped without notification,
 # producing baffling context loss.  Update both sides together.
-N_CTX = 32768
+# Override via N_CTX=<value> in .secrets to match a different KCPP instance.
+N_CTX = int(os.environ.get("N_CTX", "32768"))
 MEMORY_TOKEN_BUDGET = 4096   # tokens reserved for context memory in system prompt
 
 # socks5h (vs socks5) — the 'h' resolves hostnames AT the proxy, which is
