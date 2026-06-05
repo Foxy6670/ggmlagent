@@ -44,8 +44,8 @@ _YELLOW = "\033[33m"
 _RED    = "\033[31m"
 
 _TRIM_HEADROOM        = MAX_RESPONSE_TOKENS
-_COMPACT_THRESHOLD    = 80   # % context used that triggers a full-history compaction
-_COMPACT_KEEP_RECENT  = 2    # turns to leave uncompacted for immediate continuity
+_COMPACT_BUFFER       = 4096  # spare tokens to preserve before compaction triggers
+_COMPACT_KEEP_RECENT  = 2     # turns to leave uncompacted for immediate continuity
 _CHARS_PER_TOKEN = 3.5   # conservative fallback when tokenize is unavailable
 _FG_WAIT         = 60.0  # seconds /fg blocks before returning "still running"
 
@@ -240,7 +240,7 @@ class Agent:
         )
 
         now = datetime.now().strftime("%d %b %Y, %H:%M")
-        ctx_str = f" | {100 - self._last_ctx_pct}% ctx" if self._last_ctx_pct else ""
+        ctx_str = f" | {self._last_ctx_pct}% ctx used" if self._last_ctx_pct else ""
         print(f"\n{_CYAN}[agent {now}{ctx_str}]{_RESET} ", end="", flush=True)
         self._log.system(f"Generation started (genkey={genkey})")
 
@@ -1299,13 +1299,16 @@ class Agent:
 
         # 1. Uncompressed — ideal path; also used to measure current ctx %
         messages = self._build_messages(compress=False)
-        current_pct = round(self._token_count(messages) / N_CTX * 100)
+        current_tokens = self._token_count(messages)
+        current_pct    = round(current_tokens / N_CTX * 100)
+        compact_at     = N_CTX - _TRIM_HEADROOM - _COMPACT_BUFFER
 
-        # 2. Proactive full-history compaction at threshold — keeps one clean
-        #    summary instead of accumulating many small compaction stubs.
-        if current_pct >= _COMPACT_THRESHOLD and len(self._history) > _COMPACT_KEEP_RECENT:
+        # 2. Proactive full-history compaction — keeps one clean summary instead
+        #    of accumulating many small stubs. Fires when used tokens exceed
+        #    N_CTX - response_headroom - compact_buffer (default: 4096 spare).
+        if current_tokens >= compact_at and len(self._history) > _COMPACT_KEEP_RECENT:
             n = len(self._history) - _COMPACT_KEEP_RECENT
-            msg = f"Context at {current_pct}% — compacting {n} turns into summary."
+            msg = f"Context at {current_pct}% ({current_tokens}/{N_CTX} tokens) — compacting {n} turns."
             print(f"{_YELLOW}[agent] {msg}{_RESET}", flush=True)
             self._log.system(msg)
             self._compact_history(n)
