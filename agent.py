@@ -44,7 +44,7 @@ _YELLOW = "\033[33m"
 _RED    = "\033[31m"
 
 _TRIM_HEADROOM        = MAX_RESPONSE_TOKENS
-_COMPACT_BUFFER       = 4096  # spare tokens to preserve before compaction triggers
+_COMPACT_THRESHOLD_PCT = 90   # compact when context reaches this % of N_CTX
 _COMPACT_KEEP_RECENT  = 2     # turns to leave uncompacted for immediate continuity
 _CHARS_PER_TOKEN = 3.5   # conservative fallback when tokenize is unavailable
 _FG_WAIT         = 60.0  # seconds /fg blocks before returning "still running"
@@ -1306,7 +1306,7 @@ class Agent:
         messages = self._build_messages(compress=False)
         current_tokens = self._token_count(messages)
         current_pct    = round(current_tokens / N_CTX * 100)
-        compact_at     = N_CTX - _TRIM_HEADROOM - _COMPACT_BUFFER
+        compact_at     = round(N_CTX * _COMPACT_THRESHOLD_PCT / 100)
 
         # 2. Proactive full-history compaction — keeps one clean summary instead
         #    of accumulating many small stubs. Fires when used tokens exceed
