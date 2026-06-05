@@ -1108,7 +1108,9 @@ class Agent:
     # Message construction
     # ------------------------------------------------------------------
 
-    def _build_messages(self, compress: bool = False) -> list[dict]:
+    def _build_messages(self, compress: bool = False,
+                        omit_cmem: bool = False,
+                        omit_system: bool = False) -> list[dict]:
         """
         Build the chat message list from current state.
 
@@ -1148,15 +1150,16 @@ class Agent:
             f"════════════════════════════════════════"
         )
 
-        messages: list[dict] = [{"role": "system", "content": system_content}]
+        messages: list[dict] = [] if omit_system else [{"role": "system", "content": system_content}]
 
         # Scratchpad — placed early so its position is stable between cmem
         # changes.  Only invalidates the cache when cmem is actually modified.
-        cmem_display = self._cmem.render().strip() or "(empty)"
-        messages.append({
-            "role": "system",
-            "content": f"════ YOUR SCRATCHPAD (notes you wrote to yourself) ════\n{cmem_display}",
-        })
+        if not omit_cmem:
+            cmem_display = self._cmem.render().strip() or "(empty)"
+            messages.append({
+                "role": "system",
+                "content": f"════ YOUR SCRATCHPAD (notes you wrote to yourself) ════\n{cmem_display}",
+            })
 
         if not self._history:
             messages.append({"role": "system", "content": "Begin. Read your task file first."})
@@ -1329,7 +1332,21 @@ class Agent:
             self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
             return messages
 
-        # 4. Hard-drop oldest turns — last resort if compaction failed or window
+        # 4. Drop cmem — scratchpad is always regeneratable, history is not.
+        messages = self._build_messages(compress=True, omit_cmem=True)
+        if _fits(messages):
+            self._log.system("Context pressure: cmem omitted to fit.")
+            self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
+            return messages
+
+        # 5. Drop system prompt — model retains behaviour from prior turns.
+        messages = self._build_messages(compress=True, omit_cmem=True, omit_system=True)
+        if _fits(messages):
+            self._log.system("Context pressure: system prompt + cmem omitted to fit.")
+            self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
+            return messages
+
+        # 6. Hard-drop oldest turns — last resort if compaction failed or window
         #    is still too small after a full compact.
         while len(self._history) > 1:
             if _fits(messages):
