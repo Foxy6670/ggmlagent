@@ -111,12 +111,14 @@ class Agent:
 
     def _init_session(self):
         """Pre-populate context memory with facts Boonie always needs."""
-        addr = self._dispatch.dispatch("/wallet address")
-        if addr and not addr.startswith("[wallet] "):
+        resp = self._dispatch.dispatch("/wallet address") or ""
+        # Response is "[wallet] Address: 4xxxx..." — extract just the address.
+        addr = resp.split("Address:")[-1].strip() if "Address:" in resp else ""
+        if addr:
             self._cmem.write(1, f"My XMR wallet address: {addr}")
             self._log.system(f"Session init: wallet address written to cmem slot 1")
         else:
-            self._log.system(f"Session init: wallet address unavailable ({addr})")
+            self._log.system(f"Session init: wallet address unavailable ({resp})")
 
     def run(self):
         _print_banner()
