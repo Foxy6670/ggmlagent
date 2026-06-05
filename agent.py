@@ -960,7 +960,7 @@ class Agent:
             return
 
         messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        messages.append({"role": "user", "content": "Begin. Read your task file first."})
+        messages.append({"role": "system", "content": "Begin. Read your task file first."})
 
         good_turns = 0
         for turn in self._history:
@@ -1154,12 +1154,12 @@ class Agent:
         # changes.  Only invalidates the cache when cmem is actually modified.
         cmem_display = self._cmem.render().strip() or "(empty)"
         messages.append({
-            "role": "user",
+            "role": "system",
             "content": f"════ YOUR SCRATCHPAD (notes you wrote to yourself) ════\n{cmem_display}",
         })
 
         if not self._history:
-            messages.append({"role": "user", "content": "Begin. Read your task file first."})
+            messages.append({"role": "system", "content": "Begin. Read your task file first."})
         else:
             for turn in self._history:
                 if turn.agent_text.replace("<|eoc|>", "").strip():
@@ -1169,14 +1169,15 @@ class Agent:
                     messages.append({"role": "system", "content": content})
 
             if messages[-1]["role"] in ("assistant", "system"):
-                messages.append({"role": "user", "content": "Continue your task."})
+                messages.append({"role": "system", "content": "Continue your task."})
 
         # Perspective corrections from previous turn's think block
         for correction in self._pending_corrections:
-            messages.append({"role": "user", "content": correction})
+            messages.append({"role": "system", "content": correction})
         self._pending_corrections.clear()
 
-        # Pending Telegram messages (ephemeral, not stored in history)
+        # Pending Telegram messages (ephemeral, not stored in history) — these
+        # are Foxo's voice so they stay as "user" to distinguish from harness noise.
         for tg in self._pending_tg:
             messages.append({"role": "user", "content": tg})
 
@@ -1184,7 +1185,7 @@ class Agent:
         # invalidate the trailing-edge cache slot.
         now = datetime.now().strftime("%d %b %Y, %H:%M")
         ctx = f" | context: {self._last_ctx_pct}% used" if self._last_ctx_pct else ""
-        messages.append({"role": "user", "content": f"[system: current time is {now}{ctx}]"})
+        messages.append({"role": "system", "content": f"[system: current time is {now}{ctx}]"})
 
         return messages
 
