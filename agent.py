@@ -737,29 +737,27 @@ class Agent:
                     aborted = True
 
         # If a batch session is still open after generation ends (token limit
-        # hit mid-entry), remind the model where it left off and what to type.
+        # hit mid-entry), auto-close it so the next generation starts clean.
+        # Keeping the session open causes the model to confuse shell commands
+        # for appendlines/edit input and get stuck in an unrecoverable loop.
         if not aborted and self._dispatch.pending is not None:
             mode = self._dispatch.pending.mode
             fp   = self._dispatch.pending.file_path
+            self._dispatch.pending = None
             if mode == "appendlines":
                 obs = (
-                    f"[appendlines:{fp}] Generation ended before 'done' (token limit). "
-                    "Continue writing remaining lines, then type 'done' alone."
+                    f"[appendlines:{fp}] Session closed at token limit — "
+                    "partial content saved. Use /appendlines again if needed."
                 )
-            elif mode == "edit_old":
+            elif mode in ("edit_old", "edit_new"):
                 obs = (
-                    f"[edit:{fp}] Generation ended before '---' (token limit). "
-                    "Continue writing the old text, then type '---' alone to separate."
-                )
-            elif mode == "edit_new":
-                obs = (
-                    f"[edit:{fp}] Generation ended before 'done' (token limit). "
-                    "Continue writing replacement text, then type 'done' alone."
+                    f"[edit:{fp}] Session closed at token limit — "
+                    "edit was not applied. Use /edit again from the start."
                 )
             elif mode == "patch":
                 obs = (
-                    "[patch] Generation ended before '*** End Patch' (token limit). "
-                    "Continue the patch and finish with '*** End Patch'."
+                    "[patch] Session closed at token limit — "
+                    "patch was not applied. Use /patch again from the start."
                 )
             else:
                 obs = None
