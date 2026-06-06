@@ -49,6 +49,12 @@ _COMPACT_THRESHOLD_PCT = 90   # compact when context reaches this % of N_CTX
 _COMPACT_KEEP_RECENT  = 2     # turns to leave uncompacted for immediate continuity
 _CHARS_PER_TOKEN = 3.5   # conservative fallback when tokenize is unavailable
 _FG_WAIT         = 60.0  # seconds /fg blocks before returning "still running"
+# Short-term reasoning memory: how many trailing chars of the previous turn's
+# <think> to carry into the next turn's context, so the model keeps its train
+# of thought across the action boundary instead of re-deriving from zero.
+# Placed in the ephemeral tail (like the timestamp) so it only invalidates the
+# trailing-edge KV-cache slot, leaving append-only history cached. 0 disables.
+_THINK_CARRYOVER_CHARS = 400
 
 
 @dataclass
@@ -1212,6 +1218,22 @@ class Agent:
         # are Foxo's voice so they stay as "user" to distinguish from harness noise.
         for tg in self._pending_tg:
             messages.append({"role": "user", "content": tg})
+
+        # Short-term reasoning memory — the previous turn's think, capped to its
+        # final chars (where the decision lands) and labelled as fading past
+        # thought so it reads as memory rather than a cue to reason further.
+        # Ephemeral tail: replaced every turn, so only the trailing-edge cache
+        # slot invalidates while append-only history stays cached.
+        if _THINK_CARRYOVER_CHARS and self._history:
+            recent_think = self._history[-1].think_text.strip()
+            if recent_think:
+                tail = recent_think[-_THINK_CARRYOVER_CHARS:]
+                if len(recent_think) > _THINK_CARRYOVER_CHARS:
+                    # Begin at a word boundary so it doesn't start mid-token.
+                    cut = tail.find(" ")
+                    tail = "…" + (tail[cut + 1:] if cut != -1 else tail)
+                messages.append({"role": "system", "content":
+                    f"[your recent reasoning, fading — from the moment before this one]\n{tail}"})
 
         # Timestamp + CWD + context usage — ephemeral, at the very end so they
         # only invalidate the trailing-edge cache slot.
