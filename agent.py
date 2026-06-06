@@ -45,7 +45,13 @@ _YELLOW = "\033[33m"
 _RED    = "\033[31m"
 
 _TRIM_HEADROOM        = MAX_RESPONSE_TOKENS
-_COMPACT_THRESHOLD_PCT = 90   # compact when context reaches this % of N_CTX
+_COMPACT_THRESHOLD_PCT = 85   # compact at this % of the *usable* budget
+                              # (N_CTX − response headroom).  Must be < 100 so the
+                              # LLM summary runs BEFORE the lossy omit/drop fallbacks
+                              # (which kick in at 100% of budget).  A fixed % of the
+                              # full N_CTX is wrong here: with 6 k response headroom
+                              # the budget caps at ~81%, so a 90%-of-N_CTX trigger can
+                              # never fire and compaction gets skipped entirely.
 _COMPACT_KEEP_RECENT  = 2     # turns to leave uncompacted for immediate continuity
 _CHARS_PER_TOKEN = 3.5   # conservative fallback when tokenize is unavailable
 _FG_WAIT         = 60.0  # seconds /fg blocks before returning "still running"
@@ -1270,6 +1276,18 @@ class Agent:
         template_overhead = len(msgs) * 5 + 10
         return content_tokens + template_overhead
 
+    def _ctx_pct(self, tokens: int) -> int:
+        """Usage as % of the *usable* history budget (N_CTX − response headroom).
+
+        100% = the fit ceiling where lossy trimming (drop cmem/system, hard-drop
+        turns) begins; compaction fires at _COMPACT_THRESHOLD_PCT, below it. We
+        report against the budget rather than raw N_CTX because the response
+        headroom is reserved and can never hold history — so % of N_CTX would
+        understate true fullness and could never reach 100%.
+        """
+        budget = N_CTX - _TRIM_HEADROOM
+        return round(tokens / budget * 100) if budget > 0 else 100
+
     def _compact_history(self, n: int) -> bool:
         """
         Summarize the oldest n turns via a sync KCPP call and replace them
@@ -1367,42 +1385,43 @@ class Agent:
         # 1. Uncompressed — ideal path; also used to measure current ctx %
         messages = self._build_messages(compress=False)
         current_tokens = self._token_count(messages)
-        current_pct    = round(current_tokens / N_CTX * 100)
-        compact_at     = round(N_CTX * _COMPACT_THRESHOLD_PCT / 100)
+        current_pct    = self._ctx_pct(current_tokens)
+        compact_at     = round(budget * _COMPACT_THRESHOLD_PCT / 100)
 
         # 2. Proactive full-history compaction — keeps one clean summary instead
-        #    of accumulating many small stubs. Fires when used tokens exceed
-        #    N_CTX - response_headroom - compact_buffer (default: 4096 spare).
+        #    of accumulating many small stubs. Fires at _COMPACT_THRESHOLD_PCT of
+        #    the usable budget, i.e. before the fit ceiling (100% of budget) where
+        #    the lossy compress/omit/drop steps below would otherwise take over.
         if current_tokens >= compact_at and len(self._history) > _COMPACT_KEEP_RECENT:
             n = len(self._history) - _COMPACT_KEEP_RECENT
-            msg = f"Context at {current_pct}% ({current_tokens}/{N_CTX} tokens) — compacting {n} turns."
+            msg = f"Context at {current_pct}% of budget ({current_tokens}/{budget} usable tokens) — compacting {n} turns."
             print(f"{_YELLOW}[agent] {msg}{_RESET}", flush=True)
             self._log.system(msg)
             self._compact_history(n)
             messages = self._build_messages(compress=False)
 
         if _fits(messages):
-            self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
+            self._last_ctx_pct = self._ctx_pct(self._token_count(messages))
             return messages
 
         # 3. Compressed observations
         messages = self._build_messages(compress=True)
         if _fits(messages):
-            self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
+            self._last_ctx_pct = self._ctx_pct(self._token_count(messages))
             return messages
 
         # 4. Drop cmem — scratchpad is always regeneratable, history is not.
         messages = self._build_messages(compress=True, omit_cmem=True)
         if _fits(messages):
             self._log.system("Context pressure: cmem omitted to fit.")
-            self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
+            self._last_ctx_pct = self._ctx_pct(self._token_count(messages))
             return messages
 
         # 5. Drop system prompt — model retains behaviour from prior turns.
         messages = self._build_messages(compress=True, omit_cmem=True, omit_system=True)
         if _fits(messages):
             self._log.system("Context pressure: system prompt + cmem omitted to fit.")
-            self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
+            self._last_ctx_pct = self._ctx_pct(self._token_count(messages))
             return messages
 
         # 6. Hard-drop oldest turns — last resort if compaction failed or window
@@ -1435,7 +1454,8 @@ class Agent:
                 break
 
         self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
-        self._log.system(f"Context: {self._last_ctx_pct}% used ({N_CTX} token window)")
+        self._log.system(f"Context: {self._last_ctx_pct}% of usable budget "
+                         f"({N_CTX - _TRIM_HEADROOM} of {N_CTX} token window)")
         return messages
 
 
