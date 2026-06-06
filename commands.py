@@ -1056,7 +1056,7 @@ class CommandDispatcher:
         if not cmd_str:
             return "[shell] Empty command."
         # -n: non-interactive — fail immediately instead of prompting on /dev/tty
-        full_cmd = f"sudo -n {cmd_str}" if root else cmd_str
+        full_cmd = f"sudo -n bash -c {shlex.quote(cmd_str)}" if root else cmd_str
         try:
             proc = subprocess.run(
                 full_cmd,
