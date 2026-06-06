@@ -398,9 +398,39 @@ class Agent:
                                     if body_block_is_cmd:
                                         cmd_line = lines[0].strip() if lines else ""
                                         body = "\n".join(lines[1:])
+                                        # A `$ `/`# ` first line means the body is
+                                        # stdin for that one shell command.  If the
+                                        # body *also* holds shell-command lines the
+                                        # model meant them to run in sequence — but the
+                                        # bare-``` path would pipe them as stdin to the
+                                        # first command and silently drop them (exit 0,
+                                        # no output), which traps the model in a loop.
+                                        # Detect that and nudge toward single-line chaining.
+                                        # Body detection keys off `$ ` only: it's an
+                                        # unambiguous command marker, whereas `# ` lines
+                                        # are routinely real comments in a piped script.
+                                        cmd_is_shell = cmd_line.startswith("$ ") or (
+                                            cmd_line.startswith("# ") and not cmd_line.startswith("## ")
+                                        )
+                                        stacked = cmd_is_shell and any(
+                                            l.strip().startswith("$ ") for l in lines[1:]
+                                        )
                                         if not cmd_line:
                                             _trim_agent_text(turn, stripped)
                                             obs = "[system] Command block closed with no command on the first line."
+                                            self._record_obs(turn, stripped, obs, command=False)
+                                        elif stacked:
+                                            _trim_agent_text(turn, stripped)
+                                            self._client.abort(genkey)
+                                            aborted = True
+                                            self._log.command(f"[block] {cmd_line}")
+                                            self._log.system(f"Abort sent (genkey={genkey}), stacked shell commands")
+                                            obs = (
+                                                "[system] Multiple shell commands in one block — only the first "
+                                                "would run (the rest were being piped to it as stdin and dropped). "
+                                                "Run one command per turn, or chain them on a single line with "
+                                                "`&&`, `;`, or `||`. The working directory persists between turns."
+                                            )
                                             self._record_obs(turn, stripped, obs, command=False)
                                         else:
                                             # Don't trim the closing fence: _record_obs
