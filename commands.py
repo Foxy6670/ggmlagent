@@ -170,6 +170,7 @@ class CommandDispatcher:
         self._page_buf:    list[str] = []  # pages of the last /search or /goto result
         self._page_cur:    int = 0
         self._sim = sim
+        self._cwd: str = str(Path.cwd())  # persistent shell working directory
 
         # When simulating, the sim object replaces the real Telegram handler —
         # it duck-types `send`/`drain_inbox`/`history`. Moltbook write actions
@@ -1069,11 +1070,23 @@ class CommandDispatcher:
         return self._paginate(web_mod.fetch(args[0]))
 
     def _shell(self, cmd_str: str, root: bool = False) -> str:
-        """Run a shell command (--frwx mode only). stdin closed, 30 s timeout."""
+        """Run a shell command (--frwx mode only). stdin closed, 30 s timeout.
+
+        CWD persists across calls: 'cd' updates the stored directory and every
+        subsequent command starts from there, just like a real interactive shell.
+        """
         if not cmd_str:
             return "[shell] Empty command."
-        # -n: non-interactive — fail immediately instead of prompting on /dev/tty
-        full_cmd = f"sudo -n bash -c {shlex.quote(cmd_str)}" if root else cmd_str
+
+        _CWD_MARKER = "__CWD__:"
+        # Append CWD capture using ';' so it runs regardless of exit code.
+        cmd_with_cwd = cmd_str + f'; printf "\\n{_CWD_MARKER}%s\\n" "$(pwd)"'
+
+        if root:
+            full_cmd = f"sudo -n bash -c {shlex.quote(cmd_with_cwd)}"
+        else:
+            full_cmd = cmd_with_cwd
+
         try:
             proc = subprocess.run(
                 full_cmd,
@@ -1082,9 +1095,22 @@ class CommandDispatcher:
                 text=True,
                 timeout=_SHELL_TIMEOUT,
                 stdin=subprocess.DEVNULL,
+                cwd=self._cwd,
             )
-            out = proc.stdout + proc.stderr
-            if not out.strip():
+            raw = proc.stdout + proc.stderr
+
+            # Extract CWD marker and update stored directory.
+            lines = raw.splitlines()
+            filtered, new_cwd = [], self._cwd
+            for ln in lines:
+                if ln.startswith(_CWD_MARKER):
+                    new_cwd = ln[len(_CWD_MARKER):]
+                else:
+                    filtered.append(ln)
+            self._cwd = new_cwd
+            out = "\n".join(filtered).strip()
+
+            if not out:
                 out = "(no output)"
             elif len(out) > _SHELL_MAX_OUT:
                 omitted = len(out) - _SHELL_HEAD - _SHELL_TAIL
@@ -1093,9 +1119,9 @@ class CommandDispatcher:
                     + f"\n[…{omitted} chars omitted…]\n"
                     + out[-_SHELL_TAIL:]
                 )
-            return f"[shell] exit={proc.returncode}\n{out}"
+            return f"[shell cwd={self._cwd}] exit={proc.returncode}\n{out}"
         except subprocess.TimeoutExpired:
-            return f"[shell] Timeout after {_SHELL_TIMEOUT}s — command killed."
+            return f"[shell cwd={self._cwd}] Timeout after {_SHELL_TIMEOUT}s — command killed."
         except Exception as e:
             return f"[shell] Error: {e}"
 
