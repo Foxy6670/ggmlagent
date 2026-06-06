@@ -237,7 +237,17 @@ class CommandDispatcher:
                 return self._patch_input(END_PATCH)
             return self._begin_patch([])
         # Fall back: dispatch the command line as-is, body ignored.
-        return self.dispatch(line) or "[block] Command not recognised."
+        result = self.dispatch(line)
+        if result:
+            return result
+        stripped = line.strip()
+        if stripped and not stripped.startswith("/"):
+            return (
+                "[block] Missing prefix — did you forget `$` or `#`? "
+                "Use `$ <cmd>` to run as user, `# <cmd>` to run as root, "
+                "or `/command` for harness commands."
+            )
+        return "[block] Command not recognised."
 
     def _mb_block(self, rest: str, body: str) -> str:
         """Handle /mb commands that arrived with a multiline body."""
