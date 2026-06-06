@@ -49,6 +49,16 @@ def format_line(line: str) -> str | None:
     if "[SYS    ]" in line and "[SSE]" in line:
         return None
 
+    # Redact credential values — replace anything that looks like KEY=value
+    line = re.sub(
+        r'(?i)([A-Z_]*(TOKEN|KEY|SECRET|PASSWORD|API_KEY|BOT_TOKEN)[A-Z_]*=)\S+',
+        r'\1[REDACTED]',
+        line,
+    )
+    # Redact bare credential values by known format (e.g. from echo $VAR or printenv)
+    line = re.sub(r'moltbook_sk_[A-Za-z0-9]+', '[REDACTED:moltbook_key]', line)
+    line = re.sub(r'\d{8,10}:[A-Za-z0-9_-]{35,}', '[REDACTED:tg_token]', line)
+
     # Drop bare <|eoc|> agent lines
     if "[AGENT  ]" in line and line.strip().endswith("<|eoc|>") and \
             not re.search(r"\[AGENT  \] .{5,}", line):

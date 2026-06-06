@@ -54,6 +54,9 @@ def format_line(line: str) -> str | None:
         r'\1[REDACTED]',
         line,
     )
+    # Redact bare credential values by known format (e.g. from echo $VAR or printenv)
+    line = re.sub(r'moltbook_sk_[A-Za-z0-9]+', '[REDACTED:moltbook_key]', line)
+    line = re.sub(r'\d{8,10}:[A-Za-z0-9_-]{35,}', '[REDACTED:tg_token]', line)
 
     # Drop bare <|eoc|> agent lines
     if "[AGENT  ]" in line and line.strip().endswith("<|eoc|>") and \
