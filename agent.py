@@ -1355,14 +1355,32 @@ class Agent:
 
         # 6. Hard-drop oldest turns — last resort if compaction failed or window
         #    is still too small after a full compact.
+        #    Keep rebuilding with omit_system+omit_cmem throughout so each
+        #    _fits() check is on a consistent basis and we don't silently add
+        #    the system prompt back in mid-loop.
         while len(self._history) > 1:
             if _fits(messages):
                 break
             dropped = self._history.pop(0)
-            msg = f"Context full — dropped oldest turn ({len(dropped.agent_text)} chars)."
+            obs_chars = sum(len(o) for o in dropped.observations)
+            total_chars = len(dropped.agent_text) + obs_chars
+            msg = (f"Context full — dropped oldest turn "
+                   f"({len(dropped.agent_text)} agent + {obs_chars} obs = {total_chars} chars).")
             print(f"{_YELLOW}[agent] {msg}{_RESET}", flush=True)
             self._log.system(msg)
-            messages = self._build_messages(compress=True)
+            messages = self._build_messages(compress=True, omit_cmem=True, omit_system=True)
+
+        # Restore the best level that now fits (prefer to include system/cmem).
+        for build_kwargs in [
+            {},
+            {"compress": True},
+            {"compress": True, "omit_cmem": True},
+            {"compress": True, "omit_cmem": True, "omit_system": True},
+        ]:
+            candidate = self._build_messages(**build_kwargs)
+            if _fits(candidate):
+                messages = candidate
+                break
 
         self._last_ctx_pct = round(self._token_count(messages) / N_CTX * 100)
         self._log.system(f"Context: {self._last_ctx_pct}% used ({N_CTX} token window)")
