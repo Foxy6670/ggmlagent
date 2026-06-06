@@ -1182,11 +1182,17 @@ class Agent:
         for tg in self._pending_tg:
             messages.append({"role": "user", "content": tg})
 
-        # Timestamp + context usage — ephemeral, at the very end so they only
-        # invalidate the trailing-edge cache slot.
+        # Timestamp + CWD + context usage — ephemeral, at the very end so they
+        # only invalidate the trailing-edge cache slot.
         now = datetime.now().strftime("%d %b %Y, %H:%M")
         ctx = f" | context: {self._last_ctx_pct}% used" if self._last_ctx_pct else ""
-        messages.append({"role": "system", "content": f"[system: current time is {now}{ctx}]"})
+        raw_cwd = self._dispatch._cwd
+        try:
+            cwd_display = "~/" + str(Path(raw_cwd).relative_to(Path.home()))
+        except ValueError:
+            cwd_display = raw_cwd
+        messages.append({"role": "system", "content":
+            f"[system: current time is {now} | cwd: {cwd_display}{ctx}]"})
 
         return messages
 
