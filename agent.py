@@ -578,7 +578,7 @@ class Agent:
 
         self._log.flush_token_buf("AGENT")
         self._log.flush_token_buf("THINK")
-        hit_max_tokens = bool(finish_info) and finish_info[0] == "length"
+        hit_max_tokens = not aborted and bool(finish_info) and finish_info[0] == "length"
         if hit_max_tokens:
             self._log.system(f"Generation hit token limit (finish_reason=length, genkey={genkey})")
         self._log.system(f"Generation {'paused' if paused else 'aborted' if aborted else 'completed'} (genkey={genkey})")
