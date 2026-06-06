@@ -181,9 +181,10 @@ class KoboldClient:
             return "".join(token_iter).strip()
 
         payload = {
-            **CHAT_DEFAULTS,
             "messages": messages,
             "max_tokens": max_tokens,
+            "temperature": 0.1,
+            "top_p": 0.9,
             "stream": False,
         }
         resp = self._session.post(

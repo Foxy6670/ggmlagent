@@ -1230,8 +1230,10 @@ class Agent:
             if cmds:
                 lines.append("Agent: " + " | ".join(cmds))
             for obs in turn.observations:
-                first = obs.split("\n")[0][:200]
-                lines.append("Result: " + first)
+                body = obs[:1500]
+                if len(obs) > 1500:
+                    body = body.rstrip() + " […]"
+                lines.append("Result: " + body)
 
         transcript = "\n".join(lines)
 
@@ -1254,7 +1256,7 @@ class Agent:
         ]
 
         try:
-            summary = self._client.chat_complete_sync(prompt, max_tokens=4096, timeout=1500)
+            summary = self._client.chat_complete_sync(prompt, max_tokens=6144, timeout=1500)
         except Exception as exc:
             self._log.system(f"Compaction failed: {exc}")
             return False
