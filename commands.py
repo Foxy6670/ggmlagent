@@ -258,8 +258,15 @@ class CommandDispatcher:
         if sub == "post":
             if not rest_args:
                 return "[mb] Usage: /mb post <submolt> <title> (body follows in block)"
-            submolt = rest_args[0]
-            title   = " ".join(rest_args[1:]) if len(rest_args) > 1 else ""
+            submolt    = rest_args[0]
+            title_args = rest_args[1:]
+            if "|" in title_args:
+                pipe         = title_args.index("|")
+                title        = " ".join(title_args[:pipe])
+                inline_body  = " ".join(title_args[pipe + 1:])
+                body         = (inline_body + "\n" + body).strip() if body else inline_body
+            else:
+                title = " ".join(title_args)
             return mb_mod.create_post(submolt, title, body)
 
         if sub == "comment":
