@@ -549,8 +549,10 @@ class CommandDispatcher:
             return f"[file] Not found: {path_str}"
         self.pending = PendingEdit(mode="edit_old", file_path=path_str)
         return (
-            f"[edit:{path_str}] Write the exact text to find, then --- alone,\n"
-            f"then replacement text, then done alone (empty replacement = delete):"
+            f"[edit:{path_str}] In THIS block, before you close it, write: the exact "
+            f"text to find, then --- alone on a line, then the replacement text, then "
+            f"done alone on a line (empty replacement = delete). Do not close the block "
+            f"until after 'done'."
         )
 
     def _edit_input(self, text: str) -> str:

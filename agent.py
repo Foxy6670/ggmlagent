@@ -779,28 +779,34 @@ class Agent:
                         self._record_obs(turn, stripped, result, command=True)
                     aborted = True
 
-        # If a batch session is still open after generation ends (token limit
-        # hit mid-entry), auto-close it so the next generation starts clean.
-        # Keeping the session open causes the model to confuse shell commands
-        # for appendlines/edit input and get stuck in an unrecoverable loop.
+        # If a batch session (appendlines/edit/patch) is still open when the
+        # generation ends, auto-close it so the next generation starts clean.
+        # This usually means the model closed its block without finishing the
+        # entry (NOT a real token limit — the finish_reason is unreliable here;
+        # see the KCPP abort/length quirk). Keeping the session open causes the
+        # model to confuse later shell commands for batch input and loop forever.
         if not aborted and self._dispatch.pending is not None:
             mode = self._dispatch.pending.mode
             fp   = self._dispatch.pending.file_path
             self._dispatch.pending = None
             if mode == "appendlines":
                 obs = (
-                    f"[appendlines:{fp}] Session closed at token limit — "
-                    "partial content saved. Use /appendlines again if needed."
+                    f"[appendlines:{fp}] Session ended before you closed the block — "
+                    "the lines written so far were saved. Write all lines in one block "
+                    "and end with done before closing it; use /appendlines again to add more."
                 )
             elif mode in ("edit_old", "edit_new"):
                 obs = (
-                    f"[edit:{fp}] Session closed at token limit — "
-                    "edit was not applied. Use /edit again from the start."
+                    f"[edit:{fp}] Not applied — /edit needs the WHOLE edit in ONE "
+                    "block. Write the command, the exact old text, a line with only "
+                    "---, the new text, then a line with only done, all before you "
+                    f"close the block:\n/edit {fp}\n<exact old text>\n---\n<new text>\ndone"
                 )
             elif mode == "patch":
                 obs = (
-                    "[patch] Session closed at token limit — "
-                    "patch was not applied. Use /patch again from the start."
+                    "[patch] Not applied — write the entire patch in ONE block, "
+                    "through its closing '*** End Patch' line, before you close the "
+                    "block. Reissue /patch and include the full patch this time."
                 )
             else:
                 obs = None
