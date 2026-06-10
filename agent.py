@@ -84,6 +84,15 @@ class Agent:
         self._cmem     = ContextMemory(self._client)
         self._pmem     = PersistentMemory()
 
+        # Persistent-memory snapshot, frozen at session start.  The model is told
+        # to /pmem r on startup but routinely skips it (action-bias wins), so it
+        # never loads its own saved goal and re-derives one from scratch every
+        # session.  We poll memory.md ONCE here and pin the result in the prompt
+        # prefix (see _build_messages) so the goal is surfaced unconditionally.
+        # Frozen-at-startup is deliberate: a live re-render would let frequent
+        # pmem writes bust the KV cache every time; a static snapshot never does.
+        self._pmem_startup = self._pmem.read_page()
+
         # Simulation: synthetic Telegram + intercepted Moltbook writes.
         # Reads stay real (file I/O, web, MB reads) — see sim.py.
         if simulate:
@@ -1198,6 +1207,24 @@ class Agent:
         )
 
         messages: list[dict] = [] if omit_system else [{"role": "system", "content": system_content}]
+
+        # Persistent-memory snapshot — frozen at session start (see __init__),
+        # pinned here *before* the scratchpad.  Surfaces the agent's saved goal
+        # every turn so it doesn't re-derive one (the model skips /pmem r).  It
+        # never changes mid-session, so it never busts the cache; sitting before
+        # the scratchpad means a cmem write can't shift its position either.
+        # Dropped only with the system prompt (omit_system) under heavy pressure.
+        if not omit_system and self._pmem_startup:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "════ YOUR PERSISTENT MEMORY (saved across sessions — your "
+                    "goal lives here) ════\n"
+                    f"{self._pmem_startup}\n"
+                    "(Snapshot from session start — you do NOT need to /pmem r to "
+                    "see it. Use /pmem w to add, /pmem r for the live version.)"
+                ),
+            })
 
         # Scratchpad — placed early so its position is stable between cmem
         # changes.  Only invalidates the cache when cmem is actually modified.
