@@ -1331,8 +1331,14 @@ class Agent:
                 ),
             },
             {
+                # /no_think disables Qwen3-family reasoning for this call. Summarizing
+                # is mechanical compression — there's nothing to deliberate — and the
+                # think pass is stripped below anyway, so it's pure latency (a heavy
+                # thinker can burn the whole 6144-token budget ruminating before the
+                # summary even starts). Always-thinkers (DeepSeek-distill) ignore the
+                # token harmlessly, so 6144 stays the correct headroom for them.
                 "role": "user",
-                "content": f"Summarize this agent session excerpt:\n\n{transcript}",
+                "content": f"Summarize this agent session excerpt:\n\n{transcript}\n\n/no_think",
             },
         ]
 
