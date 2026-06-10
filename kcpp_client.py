@@ -21,7 +21,7 @@ from typing import Callable, Iterator
 from config import (
     KCPP_BASE_URL, KCPP_CHAT_URL, KCPP_ABORT_URL, KCPP_TOKENIZE_URL,
     SOCKS5_PROXY, CHAT_DEFAULTS, ABORT_COOLDOWN, KCPP_CONNECT_TIMEOUT,
-    KCPP_FIRST_TOKEN_TIMEOUT, KCPP_INTER_TOKEN_TIMEOUT,
+    KCPP_FIRST_TOKEN_TIMEOUT, KCPP_PREFILL_RATE, KCPP_INTER_TOKEN_TIMEOUT,
     HORDE_API_KEY, HORDE_MODELS,
 )
 
@@ -96,7 +96,16 @@ class KoboldClient:
         )
         resp.raise_for_status()
 
-        return genkey, self._iter_chat_tokens(resp, log_raw=log_raw, finish_info=finish_info)
+        # Prefill-aware first-token deadline: the first token can't arrive until
+        # the whole prompt is prefilled, so budget for that.  ~4 chars/token is
+        # a cheap estimate (good enough for a timeout — no tokenize round-trip).
+        prompt_chars = sum(len(m.get("content", "")) for m in messages)
+        first_token_timeout = KCPP_FIRST_TOKEN_TIMEOUT + (prompt_chars / 4) / KCPP_PREFILL_RATE
+
+        return genkey, self._iter_chat_tokens(
+            resp, log_raw=log_raw, finish_info=finish_info,
+            first_token_timeout=first_token_timeout,
+        )
 
     def _horde_chat_stream(
         self,
@@ -321,13 +330,16 @@ class KoboldClient:
         response: requests.Response,
         log_raw: "Callable[[str], None] | None" = None,
         finish_info: "list[str] | None" = None,
+        first_token_timeout: float = KCPP_FIRST_TOKEN_TIMEOUT,
     ) -> "Iterator[str]":
         """
         Wrap _parse_sse_stream with per-token timeouts using a thread+queue.
 
         Two separate deadlines:
-          - KCPP_FIRST_TOKEN_TIMEOUT: max wait for the very first token
-            (covers full prompt prefill which can take ~60 s on 32k context).
+          - first_token_timeout: max wait for the very first token.  Computed by
+            the caller as KCPP_FIRST_TOKEN_TIMEOUT + prefill estimate, since the
+            first token can't arrive until the whole prompt is prefilled and that
+            scales with context size (a flat budget kills slow-but-honest prefill).
           - KCPP_INTER_TOKEN_TIMEOUT: max gap between any two consecutive tokens
             once generation has started (~15 s at 3 tok/s normal rate).
 
@@ -352,7 +364,7 @@ class KoboldClient:
 
         first = True
         while True:
-            timeout = KCPP_FIRST_TOKEN_TIMEOUT if first else KCPP_INTER_TOKEN_TIMEOUT
+            timeout = first_token_timeout if first else KCPP_INTER_TOKEN_TIMEOUT
             try:
                 item = token_q.get(timeout=timeout)
             except _queue.Empty:

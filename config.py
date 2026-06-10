@@ -66,9 +66,17 @@ CMD_TIMEOUT = 300        # seconds before a hanging command is auto-backgrounded
 # KCPP port fails fast rather than stalling for the full read window.
 # 30 s covers Tor circuit establishment; LAN failures are detected in <1 s.
 KCPP_CONNECT_TIMEOUT = 30
-# How long to wait for the first token after connect (covers full prefill;
-# override via KCPP_FIRST_TOKEN_TIMEOUT=<seconds> in .secrets for slow hardware).
+# First-token deadline = KCPP_FIRST_TOKEN_TIMEOUT (fixed hang margin) +
+# prompt_tokens / KCPP_PREFILL_RATE.  The first token can't arrive until the
+# whole prompt is prefilled, and prefill time scales with context size — so a
+# flat deadline is wrong: on slow hardware a 9.6k-token prefill legitimately
+# takes ~380 s, which a flat 300 s budget kills mid-prefill, mistaking slow
+# prefill for a hang (the deadlock that stranded Furrow).  Scaling by prompt
+# size means we only flag a *real* stall, not honest prefill.
+# KCPP_PREFILL_RATE is a conservative tokens/sec floor (measured ~25 on the
+# Vega APU; 15 gives ~1.6× margin).  Both overridable in .secrets.
 KCPP_FIRST_TOKEN_TIMEOUT = int(os.environ.get("KCPP_FIRST_TOKEN_TIMEOUT", "90"))
+KCPP_PREFILL_RATE = float(os.environ.get("KCPP_PREFILL_RATE", "15"))
 # Max gap between consecutive tokens once generation is running.
 # Normal rate is ~3 tok/s (333 ms); 15 s = 45× headroom for brief stalls.
 KCPP_INTER_TOKEN_TIMEOUT = 15
