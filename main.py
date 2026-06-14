@@ -42,6 +42,14 @@ def main():
         help="Enable Monero wallet (starts monero-wallet-rpc; requires monero package)",
     )
     parser.add_argument(
+        "--chroot",
+        default="",
+        metavar="JAIL_PATH",
+        help="Chroot jail for shell dispatch — $ and # commands run inside the jail, "
+             "keeping .secrets and harness files unreachable. Requires a sudoers entry: "
+             "  <user> ALL=(root) NOPASSWD: /usr/sbin/chroot <JAIL_PATH> *",
+    )
+    parser.add_argument(
         "--tor",
         action="store_true",
         help="Route Telegram API calls through Tor SOCKS5 proxy (default: clearnet)",
@@ -133,6 +141,7 @@ def main():
             telegram=args.telegram,
             monero=args.monero,
             simulate=simulate,
+            chroot=args.chroot,
         )
         if args.teleop:
             agent.run_teleop()

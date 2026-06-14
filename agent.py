@@ -78,6 +78,7 @@ class Agent:
         telegram: bool = False,
         monero: bool = False,
         simulate: bool = False,
+        chroot: str = "",
     ):
         self._frwx     = frwx
         self._client   = KoboldClient()
@@ -104,7 +105,7 @@ class Agent:
         self._dispatch      = CommandDispatcher(
             self._cmem, self._pmem,
             frwx=frwx, telegram=telegram, monero=monero,
-            sim=self._sim,
+            sim=self._sim, chroot=chroot,
         )
         self._history:      list[Turn] = []
         self._log           = SessionLogger()
