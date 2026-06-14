@@ -66,10 +66,11 @@ _THINK_CARRYOVER_CHARS = 400
 
 @dataclass
 class Turn:
-    agent_text:   str       = ""
-    think_text:   str       = ""   # content of <think>…</think>, for training
-    observations: list[str] = field(default_factory=list)
-    tg_context:   list[str] = field(default_factory=list)  # Telegram msgs that prompted this turn
+    agent_text:    str       = ""
+    think_text:    str       = ""   # content of <think>…</think>, for training
+    observations:  list[str] = field(default_factory=list)
+    tg_context:    list[str] = field(default_factory=list)  # Telegram msgs that prompted this turn
+    skip_training: bool      = False  # True for harness-injected bootstrap turns
 
 
 class Agent:
@@ -148,10 +149,52 @@ class Agent:
         else:
             self._log.system(f"Session init: wallet address unavailable ({resp})")
 
+    def _run_bootstrap(self) -> None:
+        """
+        Pre-run commands from bootstrap.md and inject as fake history turns.
+
+        Format — one command per line; lines starting with # become the
+        think_text for the following command (pattern-seeds the model):
+
+            # I should read my task file to understand my current objectives.
+            /read task.md
+
+        Bootstrap turns are flagged skip_training=True so they never appear
+        in the fine-tuning corpus — only real model output gets trained on.
+        """
+        bootstrap_path = Path("bootstrap.md")
+        if not bootstrap_path.exists():
+            return
+
+        think_buf: list[str] = []
+        for raw in bootstrap_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                think_buf.append(line[1:].strip())
+                continue
+
+            result = self._dispatch.dispatch(line)
+            if result is None:
+                think_buf.clear()
+                continue
+
+            agent_text = f"```\n{line}\n```\n<|eoc|>"
+            self._history.append(Turn(
+                agent_text=agent_text,
+                think_text=" ".join(think_buf),
+                observations=[result],
+                skip_training=True,
+            ))
+            think_buf.clear()
+            self._log.system(f"Bootstrap: {line}")
+
     def run(self):
         _print_banner()
         self._log.system("=== SESSION START ===")
         self._init_session()
+        self._run_bootstrap()
         _retry_delay = 30
         failures = 0
         eoc_streak = 0
@@ -1029,7 +1072,7 @@ class Agent:
             is_correction = any(
                 obs.startswith(p) for obs in turn.observations for p in self._BAD_OBS_PREFIXES
             )
-            if is_correction or not turn.agent_text.replace("<|eoc|>", "").strip():
+            if turn.skip_training or is_correction or not turn.agent_text.replace("<|eoc|>", "").strip():
                 continue
             # Telegram messages that arrived just before this turn become user
             # messages immediately preceding the assistant response, preserving
