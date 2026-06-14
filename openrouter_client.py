@@ -84,9 +84,18 @@ class OpenRouterClient:
         if genkey is None:
             genkey = _make_genkey()
 
+        # Append /think to the last incoming message to enable Qwen3-family
+        # reasoning.  Mirrors the /no_think pattern used in the compaction
+        # summarizer — appended to message content, not a separate turn.
+        messages_with_prefill = list(messages)
+        if messages_with_prefill:
+            last = dict(messages_with_prefill[-1])
+            last["content"] = last["content"] + "\n/think"
+            messages_with_prefill[-1] = last
+
         # Append a partial assistant message so the model continues inside a
         # triple-tick block rather than defaulting to its native <tool_call> format.
-        messages_with_prefill = list(messages) + [{"role": "assistant", "content": "```\n"}]
+        messages_with_prefill.append({"role": "assistant", "content": "```\n"})
 
         payload = {
             **{k: v for k, v in CHAT_DEFAULTS.items() if k not in ("stream", "genkey")},
@@ -120,9 +129,9 @@ class OpenRouterClient:
         response: requests.Response,
         **kwargs,
     ) -> "Iterator[str]":
-        # Yield the opening fence as a synthetic token so agent.py's triple-tick
-        # parser sees a complete block start.  The matching prefill message sent
-        # in the payload forces the model to continue inside the block.
+        # Yield the opening fence + slash as synthetic tokens so agent.py's
+        # triple-tick parser sees a block start and the model must continue
+        # a /command rather than writing prose or <tool_call> XML.
         yield "```\n"
         yield from self._iter_chat_tokens(response, **kwargs)
 
