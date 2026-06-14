@@ -30,6 +30,7 @@ from pathlib import Path
 import requests
 
 from kcpp_client import KoboldClient, _make_genkey
+import config as _cfg
 from memory import ContextMemory, PersistentMemory
 from commands import CommandDispatcher, is_command_line, is_shell_fence_open, is_fence_close
 from logger import SessionLogger
@@ -81,7 +82,11 @@ class Agent:
         chroot: str = "",
     ):
         self._frwx     = frwx
-        self._client   = KoboldClient()
+        if _cfg.OPENROUTER_API_KEY:
+            from openrouter_client import OpenRouterClient
+            self._client = OpenRouterClient()
+        else:
+            self._client = KoboldClient()
         self._cmem     = ContextMemory(self._client)
         self._pmem     = PersistentMemory()
 

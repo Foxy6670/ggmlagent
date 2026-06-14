@@ -55,6 +55,14 @@ BOONIE_ONION = os.environ.get("BOONIE_ONION", "")
 FURROW_ONION = os.environ.get("FURROW_ONION", "furrow@stt7f7qmyesgdy4tya2sq6trqhzw5b35ihwgcnvfxwkkuw2wgmxdywqd.onion")
 
 MAX_RESPONSE_TOKENS = 6144
+
+# OpenRouter — set OPENROUTER_API_KEY in .secrets to use cloud inference instead of KCPP.
+# Agent auto-selects OpenRouterClient when the key is present.
+OPENROUTER_API_KEY       = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL         = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.1-70b-instruct:free")
+OR_MIN_TURN_GAP          = float(os.environ.get("OR_MIN_TURN_GAP", "30"))   # seconds between turns
+OR_DAILY_TOKEN_BUDGET    = int(os.environ.get("OR_DAILY_TOKEN_BUDGET", "900000"))  # ~90% of 1M/day
+
 HORDE_API_KEY  = os.environ.get("HORDE_API_KEY", "0000000000")  # set in .secrets when using Horde
 # Comma-separated list of Horde model names to request, e.g. "koboldcpp/Qwen3-14B".
 # Empty = any available worker.
