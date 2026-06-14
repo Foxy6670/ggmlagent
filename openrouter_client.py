@@ -87,10 +87,11 @@ class OpenRouterClient:
         payload = {
             **{k: v for k, v in CHAT_DEFAULTS.items() if k not in ("stream", "genkey")},
             **{k: v for k, v in overrides.items()},
-            "model":   OPENROUTER_MODEL,
+            "model":    OPENROUTER_MODEL,
             "messages": messages,
-            "stream":  True,
+            "stream":   True,
             "stream_options": {"include_usage": True},  # usage in final chunk
+            "reasoning": {"enabled": True},  # OpenRouter's think-block toggle
         }
 
         resp = self._session.post(
