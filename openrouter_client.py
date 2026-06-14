@@ -84,14 +84,17 @@ class OpenRouterClient:
         if genkey is None:
             genkey = _make_genkey()
 
+        # Append a partial assistant message so the model continues inside a
+        # triple-tick block rather than defaulting to its native <tool_call> format.
+        messages_with_prefill = list(messages) + [{"role": "assistant", "content": "```\n"}]
+
         payload = {
             **{k: v for k, v in CHAT_DEFAULTS.items() if k not in ("stream", "genkey")},
             **{k: v for k, v in overrides.items()},
             "model":    OPENROUTER_MODEL,
-            "messages": messages,
+            "messages": messages_with_prefill,
             "stream":   True,
             "stream_options": {"include_usage": True},  # usage in final chunk
-            "reasoning": {"enabled": True},  # OpenRouter's think-block toggle
         }
 
         resp = self._session.post(
@@ -100,12 +103,28 @@ class OpenRouterClient:
             stream=True,
             timeout=(_CONNECT_TIMEOUT, None),
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            body = resp.text[:300]
+            raise requests.HTTPError(
+                f"{resp.status_code} {resp.reason} — {body}",
+                response=resp,
+            )
 
         with self._resp_lock:
             self._active_resp = resp
 
-        return genkey, self._iter_chat_tokens(resp, log_raw=log_raw, finish_info=finish_info)
+        return genkey, self._iter_with_prefill(resp, log_raw=log_raw, finish_info=finish_info)
+
+    def _iter_with_prefill(
+        self,
+        response: requests.Response,
+        **kwargs,
+    ) -> "Iterator[str]":
+        # Yield the opening fence as a synthetic token so agent.py's triple-tick
+        # parser sees a complete block start.  The matching prefill message sent
+        # in the payload forces the model to continue inside the block.
+        yield "```\n"
+        yield from self._iter_chat_tokens(response, **kwargs)
 
     def chat_complete_sync(
         self,
