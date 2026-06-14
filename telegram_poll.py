@@ -27,9 +27,10 @@ from pathlib import Path
 import requests
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_HISTORY, USE_TOR
 
-BOT_TOKEN = TELEGRAM_BOT_TOKEN
-CHAT_ID   = TELEGRAM_CHAT_ID
-INBOX     = Path(TELEGRAM_HISTORY)
+BOT_TOKEN    = TELEGRAM_BOT_TOKEN
+CHAT_ID      = TELEGRAM_CHAT_ID
+INBOX        = Path(TELEGRAM_HISTORY)
+_OFFSET_FILE = Path(TELEGRAM_HISTORY).parent / "telegram_poll_offset.txt"
 
 if not BOT_TOKEN:
     print("ERROR: TELEGRAM_BOT_TOKEN not set in .secrets or environment.", file=sys.stderr)
@@ -79,11 +80,24 @@ def send(chat_id: int, text: str) -> None:
     )
 
 
+def _load_offset() -> int:
+    try:
+        return int(_OFFSET_FILE.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return 0
+
+
+def _save_offset(offset: int) -> None:
+    _OFFSET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _OFFSET_FILE.write_text(str(offset))
+
+
 def main():
     print(f"[telegram_poll] Starting. Inbox: {INBOX}")
     print(f"[telegram_poll] Accepting messages from all chats. Primary: {CHAT_ID or '(not set)'}")
 
-    offset = 0
+    offset = _load_offset()
+    fresh_start = offset == 0  # only send "Hi, Foxo!" on a genuine first run
     startup_sent = False
     while True:
         try:
@@ -94,7 +108,7 @@ def main():
             time.sleep(10)
             continue
 
-        if CHAT_ID and not startup_sent:
+        if CHAT_ID and fresh_start and not startup_sent:
             try:
                 send(int(CHAT_ID), "Hi, Foxo!")
                 startup_sent = True
@@ -104,6 +118,7 @@ def main():
 
         for update in updates:
             offset = update["update_id"] + 1
+            _save_offset(offset)
             msg = update.get("message", {})
             if not msg:
                 continue
