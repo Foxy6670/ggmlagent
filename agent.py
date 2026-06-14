@@ -83,6 +83,7 @@ class Agent:
         chroot: str = "",
     ):
         self._frwx     = frwx
+        self._chroot   = chroot
         if _cfg.OPENROUTER_API_KEY:
             from openrouter_client import OpenRouterClient
             self._client = OpenRouterClient()
@@ -1237,15 +1238,24 @@ class Agent:
             cache (the about-to-generate position) rather than shifting
             stable content downstream.
         """
-        shell_section = (
-            "\n\n════════════════════════════════════════\n"
-            "SHELL  (full system access — --frwx mode)\n"
-            "  $ <command>    run as current user (30 s timeout, stdin closed)\n"
-            "  # <command>    run as root via sudo (same timeout)\n"
-            "  File commands (/read, /edit, etc.) have no path restrictions.\n"
-            "  Use <think> before any destructive or irreversible command.\n"
-            "════════════════════════════════════════"
-        ) if self._frwx else ""
+        if self._frwx:
+            _file_restriction = (
+                f"  File commands (/read, /edit, etc.): absolute paths are jailed "
+                f"to {self._chroot}; relative paths are workspace-scoped.\n"
+                if self._chroot else
+                "  File commands (/read, /edit, etc.) have no path restrictions.\n"
+            )
+            shell_section = (
+                "\n\n════════════════════════════════════════\n"
+                "SHELL  (full system access — --frwx mode)\n"
+                "  $ <command>    run as current user (30 s timeout, stdin closed)\n"
+                "  # <command>    run as root via sudo (same timeout)\n"
+                + _file_restriction +
+                "  Use <think> before any destructive or irreversible command.\n"
+                "════════════════════════════════════════"
+            )
+        else:
+            shell_section = ""
 
         system_content = (
             SYSTEM_PROMPT

@@ -35,6 +35,7 @@ from apply_patch import (
 _WORK_DIR = Path(".").resolve()
 _FILE_PAGE_LINES = 100
 _frwx_enabled = False   # set True by CommandDispatcher when --frwx is active
+_chroot_root: "Path | None" = None  # set by CommandDispatcher when --chroot is active
 
 _PAGE_SIZE      = 6000  # chars per web page; ~1 500 tokens — fits comfortably in context
 _TG_HISTORY_N   = 30    # recent Telegram messages shown by bare /telegram
@@ -116,7 +117,24 @@ class FileReader:
         return header + numbered
 
 
+_JAIL_BLOCKED_NAMES = frozenset({".secrets", "hosts.yml"})
+
 def _safe_path(path_str: str) -> Path:
+    if _chroot_root is not None:
+        raw = Path(path_str)
+        if raw.name in _JAIL_BLOCKED_NAMES:
+            raise CommandError(f"[file] Access denied (credential file): {path_str}")
+        if raw.is_absolute():
+            # Absolute paths are jailed: /etc/foo → <jail>/etc/foo
+            p = (_chroot_root / raw.relative_to("/")).resolve()
+            if not str(p).startswith(str(_chroot_root)):
+                raise CommandError(f"[file] Access denied (outside jail): {path_str}")
+        else:
+            # Relative paths resolve from the workspace (harness-managed files)
+            p = (_WORK_DIR / raw).resolve()
+            if not str(p).startswith(str(_WORK_DIR)):
+                raise CommandError(f"[file] Access denied (outside workspace): {path_str}")
+        return p
     p = (Path(".").resolve() / path_str).resolve()
     if not _frwx_enabled and not str(p).startswith(str(_WORK_DIR)):
         raise CommandError(f"[file] Access denied (outside working directory): {path_str}")
@@ -157,10 +175,11 @@ class CommandDispatcher:
         sim=None,
         chroot: str = "",
     ):
-        global _frwx_enabled
+        global _frwx_enabled, _chroot_root
         _frwx_enabled = frwx
         self._frwx = frwx
         self._chroot: str = chroot  # jail path for shell dispatch; "" = disabled
+        _chroot_root = Path(chroot).resolve() if chroot else None
         self.cmem = cmem
         self.pmem = pmem
         self._file_reader = FileReader()

@@ -84,18 +84,20 @@ class OpenRouterClient:
         if genkey is None:
             genkey = _make_genkey()
 
-        # Append /think to the last incoming message to enable Qwen3-family
-        # reasoning.  Mirrors the /no_think pattern used in the compaction
-        # summarizer — appended to message content, not a separate turn.
+        # Inject /think to enable Qwen3-family reasoning.  Must land in a user
+        # message — putting it in a system message produces zero tokens on
+        # DeepInfra.  If the last message is already user, append it there;
+        # otherwise add a minimal user turn so the model has a cue to respond.
+        # NOTE: no assistant-prefill — a partial assistant turn blocks the
+        # reasoning phase entirely (reasoning_tokens stays 0).  Qwen3-235B uses
+        # triple-tick format natively; the prefill was only needed for Ring-1T.
         messages_with_prefill = list(messages)
-        if messages_with_prefill:
+        if messages_with_prefill and messages_with_prefill[-1]["role"] == "user":
             last = dict(messages_with_prefill[-1])
             last["content"] = last["content"] + "\n/think"
             messages_with_prefill[-1] = last
-
-        # Append a partial assistant message so the model continues inside a
-        # triple-tick block rather than defaulting to its native <tool_call> format.
-        messages_with_prefill.append({"role": "assistant", "content": "```\n"})
+        else:
+            messages_with_prefill.append({"role": "user", "content": "/think"})
 
         payload = {
             **{k: v for k, v in CHAT_DEFAULTS.items() if k not in ("stream", "genkey")},
@@ -129,10 +131,6 @@ class OpenRouterClient:
         response: requests.Response,
         **kwargs,
     ) -> "Iterator[str]":
-        # Yield the opening fence + slash as synthetic tokens so agent.py's
-        # triple-tick parser sees a block start and the model must continue
-        # a /command rather than writing prose or <tool_call> XML.
-        yield "```\n"
         yield from self._iter_chat_tokens(response, **kwargs)
 
     def chat_complete_sync(

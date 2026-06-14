@@ -7,12 +7,52 @@ API key is read from config.MOLTBOOK_API_KEY (set MOLTBOOK_API_KEY env var).
 Responses are formatted as compact human-readable text for the agent, not raw JSON.
 """
 
+import hashlib
 import json
+import time
+from pathlib import Path
 import requests
 from config import MOLTBOOK_API_KEY
 
 _BASE    = "https://www.moltbook.com/api/v1"
 _TRUNC   = 24000  # max chars per observation (~6000 tokens)
+
+# ---------------------------------------------------------------------------
+# Local dedup cache — prevents re-sending identical comments/posts to the API,
+# which triggers Moltbook's auto-mod duplicate_comment suspension.
+# Stored as a JSON file next to the running workspace.
+# ---------------------------------------------------------------------------
+_DEDUP_TTL = 8 * 24 * 3600  # 8 days — longer than the 7-day suspension window
+_DEDUP_FILE = Path(".moltbook_sent.json")
+
+
+def _dedup_key(scope: str, content: str) -> str:
+    h = hashlib.sha256(content.encode()).hexdigest()[:16]
+    return f"{scope}:{h}"
+
+
+def _dedup_check(scope: str, content: str) -> bool:
+    """Return True (blocked) if this content was recently sent."""
+    try:
+        data = json.loads(_DEDUP_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return False
+    entry = data.get(_dedup_key(scope, content))
+    if entry and time.time() - entry < _DEDUP_TTL:
+        return True
+    return False
+
+
+def _dedup_record(scope: str, content: str) -> None:
+    try:
+        data = json.loads(_DEDUP_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    now = time.time()
+    data[_dedup_key(scope, content)] = now
+    # Prune expired entries
+    data = {k: v for k, v in data.items() if now - v < _DEDUP_TTL}
+    _DEDUP_FILE.write_text(json.dumps(data))
 
 
 class MoltbookError(Exception):
@@ -44,7 +84,8 @@ def _call(method: str, path: str, **kwargs) -> dict:
         retry = data.get("retry_after_seconds") or data.get("retry_after_minutes")
         raise MoltbookError(f"Rate limited. Retry in {retry}s/min. {data.get('message','')}")
     if resp.status_code >= 400:
-        raise MoltbookError(f"API error {resp.status_code}: {data.get('error') or data.get('message') or resp.text[:200]}")
+        detail = data.get('error') or data.get('message') or data.get('detail') or resp.text[:400]
+        raise MoltbookError(f"API error {resp.status_code}: {detail} | body: {json.dumps(data)[:200]}")
     return data
 
 
@@ -268,6 +309,10 @@ def read_post(post_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 def create_post(submolt: str, title: str, content: str = "") -> str:
+    scope = f"post:{submolt}"
+    dedup_content = title + "\n" + content
+    if _dedup_check(scope, dedup_content):
+        return "[mb] Duplicate post blocked — identical title+content was already submitted."
     payload: dict = {"submolt_name": submolt, "title": title}
     if content:
         payload["content"] = content
@@ -282,6 +327,7 @@ def create_post(submolt: str, title: str, content: str = "") -> str:
     ptitle = post.get("title") or data.get("title", "?")
 
     if not data.get("verification_required"):
+        _dedup_record(scope, dedup_content)
         return f"[mb] Post published! ID: {pid} — {ptitle}"
 
     # Verification challenge — return it to the agent to solve
@@ -316,6 +362,9 @@ def verify(code: str, answer: str) -> str:
 # ---------------------------------------------------------------------------
 
 def comment(post_id: str, content: str, parent_id: str = "") -> str:
+    scope = f"comment:{post_id}"
+    if _dedup_check(scope, content):
+        return "[mb] Duplicate comment blocked — identical text was already sent to this post."
     payload: dict = {"content": content}
     if parent_id:
         payload["parent_id"] = parent_id
@@ -323,6 +372,7 @@ def comment(post_id: str, content: str, parent_id: str = "") -> str:
 
     if not data.get("verification_required"):
         c = data.get("comment", {})
+        _dedup_record(scope, content)
         return f"[mb] Comment posted! ID: {c.get('id','?')}"
 
     c = data.get("comment", {})
