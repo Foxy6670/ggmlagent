@@ -120,10 +120,10 @@ class FileReader:
 _JAIL_BLOCKED_NAMES = frozenset({".secrets", "hosts.yml"})
 
 def _safe_path(path_str: str) -> Path:
+    if Path(path_str).name in _JAIL_BLOCKED_NAMES:
+        raise CommandError(f"[file] Access denied (credential file): {path_str}")
     if _chroot_root is not None:
         raw = Path(path_str)
-        if raw.name in _JAIL_BLOCKED_NAMES:
-            raise CommandError(f"[file] Access denied (credential file): {path_str}")
         if raw.is_absolute():
             # Absolute paths are jailed: /etc/foo → <jail>/etc/foo
             p = (_chroot_root / raw.relative_to("/")).resolve()
