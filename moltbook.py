@@ -471,7 +471,12 @@ def search(query: str, limit: int = 10) -> str:
 # ---------------------------------------------------------------------------
 
 def dm_check() -> str:
-    data = _call("GET", "/agents/dm/check")
+    try:
+        data = _call("GET", "/agents/dm/check")
+    except MoltbookError as e:
+        if "404" in str(e):
+            return "[mb:dm] DM system unavailable on this server."
+        raise
     if not data.get("has_activity"):
         return "[mb:dm] No DM activity."
     lines = [f"[mb:dm] Activity: {data.get('summary','')}"]
