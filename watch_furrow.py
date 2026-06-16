@@ -2,22 +2,33 @@
 """
 watch_furrow.py — live Furrow session monitor.
 
-Connects to the Gateway via LAN SSH, tails the latest session log,
-and formats output with colors. Filters out RAW/SSE noise.
+Connects to the Gateway and tails the latest session log, formatting output
+with colors and filtering RAW/SSE noise. Defaults to the Tor onion hidden
+service (works from anywhere); pass --lan to go direct over the home LAN
+(faster, no Tor) when you're on the same network.
 
 Usage:
-    python3 watch_furrow.py           # follow latest session
-    python3 watch_furrow.py --list    # list available sessions
-    python3 watch_furrow.py <N>       # follow Nth most recent session (1=latest)
+    python3 watch_furrow.py             # follow latest session (over Tor onion)
+    python3 watch_furrow.py --lan       # follow latest session (direct LAN, no Tor)
+    python3 watch_furrow.py --quiet     # collapse feed/search obs into one summary line
+    python3 watch_furrow.py --list      # list available sessions
+    python3 watch_furrow.py <N>         # follow Nth most recent session (1=latest)
+    (flags combine freely: --lan --quiet, etc.)
 """
 
 import re
 import subprocess
 import sys
 
-HOST   = "furrow@stt7f7qmyesgdy4tya2sq6trqhzw5b35ihwgcnvfxwkkuw2wgmxdywqd.onion"
-SSH    = ["ssh", "-o", "ProxyCommand=nc -x 127.0.0.1:9050 %h %p", HOST]
-LOGDIR = "ggmlagent/furrow/logs"
+# Default route: Tor onion hidden service — reachable from anywhere.
+HOST     = "furrow@stt7f7qmyesgdy4tya2sq6trqhzw5b35ihwgcnvfxwkkuw2wgmxdywqd.onion"
+SSH_TOR  = ["ssh", "-o", "ProxyCommand=nc -x 127.0.0.1:9050 %h %p", HOST]
+# Home-LAN route: direct, no Tor — used only when --lan is passed.
+LAN_HOST = "furrow@GWNR71517-BL.lan"
+SSH_LAN  = ["ssh", LAN_HOST]
+# Active route; main() flips this to SSH_LAN when --lan is given.
+SSH      = SSH_TOR
+LOGDIR   = "ggmlagent/furrow/logs"
 
 RESET  = "\033[0m"
 BOLD   = "\033[1m"
@@ -31,13 +42,30 @@ BLUE   = "\033[34m"
 PURPLE = "\033[35m"
 
 
+class Unreachable(Exception):
+    """The SSH/Tor connection itself failed — distinct from a successful
+    command that simply returned no output. Lets callers tell 'host is down /
+    onion not yet published' apart from 'connected, but no logs exist'."""
+
+
 def ssh(cmd: str, timeout: int = 30) -> str:
-    r = subprocess.run(SSH + [cmd], capture_output=True, text=True, timeout=timeout)
+    try:
+        r = subprocess.run(SSH + [cmd], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise Unreachable(f"connection timed out after {timeout}s")
+    # ssh reserves exit code 255 for its own failures (connection refused/timeout,
+    # DNS, and ProxyCommand/Tor errors) — as opposed to the remote command's own
+    # non-zero exit (e.g. ls finding no matching files, which returns 1/2). So 255
+    # means we never reached the host; anything else means the command ran.
+    if r.returncode == 255:
+        err = [l for l in r.stderr.strip().splitlines() if l.strip()]
+        raise Unreachable(err[-1] if err else "ssh connection failed")
     return r.stdout.strip()
 
 
 def list_sessions() -> list[str]:
-    out = ssh(f"ls -t {LOGDIR}/session_*.log 2>/dev/null")
+    # Use find+sort to avoid "Argument list too long" on large log directories.
+    out = ssh(f"find {LOGDIR} -maxdepth 1 -name 'session_*.log' | sort -r 2>/dev/null")
     return [l.strip() for l in out.splitlines() if l.strip()]
 
 
@@ -63,7 +91,7 @@ def format_line(line: str) -> str | None:
             not re.search(r"\[AGENT  \] .{5,}", line):
         return None
 
-    m = re.match(r"^(\d{2}:\d{2}:\d{2}\.\d{3}) \[(\w+)\s*\] (.*)$", line)
+    m = re.match(r"^(\d{2}:\d{2}:\d{2}\.\d{3}) \[(\w+)\s*\] ?(.*)$", line)
     if not m:
         return DIM + line + RESET
 
@@ -100,7 +128,11 @@ def format_line(line: str) -> str | None:
         return f"{ts_str} [{tag}] {content}"
 
 
-def tail_session(log_path: str) -> None:
+_BULK_OBS_START = re.compile(r"^\[mb:(feed|submolts)\]|^\[web\] \d+\.")
+_LOG_LINE       = re.compile(r"^(\d{2}:\d{2}:\d{2}\.\d{3}) \[(\w+)\s*\] ?(.*)")
+
+
+def tail_session(log_path: str, quiet: bool = False) -> None:
     print(f"{BOLD}Watching:{RESET} {GRAY}{log_path}{RESET}\n", flush=True)
     proc = subprocess.Popen(
         SSH + [f"tail -n 80 -f {log_path}"],
@@ -109,9 +141,27 @@ def tail_session(log_path: str) -> None:
         text=True,
         bufsize=1,
     )
+    in_bulk = False  # quiet mode: True while suppressing a feed/search block
     try:
         for raw in proc.stdout:
-            formatted = format_line(raw.rstrip())
+            line = raw.rstrip()
+            if quiet:
+                m = _LOG_LINE.match(line)
+                if m:
+                    tag, content = m.group(2).strip(), m.group(3)
+                    if tag == "OBS":
+                        if _BULK_OBS_START.match(content):
+                            in_bulk = True
+                            ts = GRAY + m.group(1) + RESET
+                            label = content[:35].rstrip()
+                            print(f"{ts} {CYAN}[ obs ]{RESET} {DIM}{label} …{RESET}",
+                                  flush=True)
+                            continue
+                        if in_bulk:
+                            continue
+                    else:
+                        in_bulk = False
+            formatted = format_line(line)
             if formatted is not None:
                 print(formatted, flush=True)
     except KeyboardInterrupt:
@@ -122,10 +172,31 @@ def tail_session(log_path: str) -> None:
 
 
 def main() -> None:
+    global SSH
     args = sys.argv[1:]
 
-    if "--list" in args:
+    use_lan = "--lan" in args
+    quiet   = "--quiet" in args
+    args = [a for a in args if a not in ("--lan", "--quiet")]
+    if use_lan:
+        SSH = SSH_LAN
+    route = "LAN" if use_lan else "Tor onion"
+
+    try:
         sessions = list_sessions()
+    except Unreachable as e:
+        print(f"{RED}[unreachable]{RESET} Gateway not reachable over {route}: {e}",
+              file=sys.stderr)
+        if use_lan:
+            print(f"{DIM}On the LAN — is the Gateway powered on and on the network? "
+                  f"(drop --lan to fall back to the Tor onion.){RESET}", file=sys.stderr)
+        else:
+            print(f"{DIM}After a reboot the hidden-service descriptor can take a few "
+                  f"minutes to republish — retry shortly, or use --lan if you're home.{RESET}",
+                  file=sys.stderr)
+        sys.exit(2)
+
+    if "--list" in args:
         if not sessions:
             print("No session logs found.")
             return
@@ -134,7 +205,6 @@ def main() -> None:
             print(f"  {GRAY}{i:2}.{RESET} {s}{marker}")
         return
 
-    sessions = list_sessions()
     if not sessions:
         print("No session logs found on Gateway.", file=sys.stderr)
         sys.exit(1)
@@ -152,7 +222,7 @@ def main() -> None:
               file=sys.stderr)
         sys.exit(1)
 
-    tail_session(sessions[idx])
+    tail_session(sessions[idx], quiet=quiet)
 
 
 if __name__ == "__main__":
