@@ -172,8 +172,12 @@ FILES  (working directory only — no .. escapes)
   /dir [path]              list directory
   /read <file>             read file (shows numbered lines)
   /append <file> <text>    append one line (content must be on the SAME line)
-  /appendlines <file>      append multiple lines — type one line per response,
-                           then 'done' to finish; use for multi-line entries
+  /appendlines <file>      append multiple lines — put ALL lines in the block body,
+                           with 'done' alone on the last line to finish:
+                             /appendlines notes.md
+                             first line of content
+                             second line of content
+                             done
   /edit <file>             find-and-replace a block of text — write all at once:
                              /edit config.py
                              temperature: 0.7

@@ -40,6 +40,37 @@ _ABORT_RE    = re.compile(r"\[SYS\s*\] Abort sent \(genkey=[A-Z0-9]+\), (.+?)\s*
 _MODEL_RE    = re.compile(r'"model"\s*:\s*"([^"]+)"')
 _SELF_REF_RE = re.compile(r'\bthe user\b', re.IGNORECASE)
 
+# Ordered substitutions for fixing third-person "the user ..." framing in think
+# blocks.  Verb-form pairs come first so the catch-all ("the user" → "I") doesn't
+# consume matches that need a different verb conjugation.
+_THIRD_PERSON_SUBS = [
+    (re.compile(r'\bthe user is\b',     re.IGNORECASE), 'I am'),
+    (re.compile(r'\bthe user was\b',    re.IGNORECASE), 'I was'),
+    (re.compile(r'\bthe user has\b',    re.IGNORECASE), 'I have'),
+    (re.compile(r'\bthe user had\b',    re.IGNORECASE), 'I had'),
+    (re.compile(r'\bthe user needs\b',  re.IGNORECASE), 'I need'),
+    (re.compile(r'\bthe user wants\b',  re.IGNORECASE), 'I want'),
+    (re.compile(r'\bthe user should\b', re.IGNORECASE), 'I should'),
+    (re.compile(r'\bthe user will\b',   re.IGNORECASE), 'I will'),
+    (re.compile(r'\bthe user can\b',    re.IGNORECASE), 'I can'),
+    (re.compile(r'\bthe user might\b',  re.IGNORECASE), 'I might'),
+    (re.compile(r'\bthe user could\b',  re.IGNORECASE), 'I could'),
+    (re.compile(r'\bthe user would\b',  re.IGNORECASE), 'I would'),
+    (re.compile(r'\bthe user\'s\b',     re.IGNORECASE), 'my'),
+    (re.compile(r'\bthe user\b',        re.IGNORECASE), 'I'),
+]
+
+
+def _fix_third_person(text: str) -> str:
+    """Rewrite third-person 'the user ...' framing to first-person 'I ...'."""
+    for pattern, replacement in _THIRD_PERSON_SUBS:
+        text = pattern.sub(replacement, text)
+    # Re-capitalise 'my' / 'i' at sentence boundaries (after '.', '!', '?', or
+    # at the very start of the block).
+    text = re.sub(r'(?:^|(?<=[.!?])\s+)(i)\b', lambda m: m.group(0)[:-1] + 'I', text)
+    text = re.sub(r'(?:^|(?<=[.!?])\s+)(my)\b', lambda m: m.group(0)[:-2] + 'My', text)
+    return text
+
 
 def _session_health(path: Path) -> tuple[int, int]:
     """Return (executing_aborts, total_aborts) for a session log.
@@ -152,8 +183,6 @@ def _is_bad(turn: Turn) -> bool:
         for prefix in _BAD_OBS_PREFIXES:
             if prefix.lower() in obs.lower():
                 return True
-    if _SELF_REF_RE.search(turn.think):
-        return True
     return False
 
 
@@ -165,7 +194,7 @@ def _build_messages(turns: list[Turn], system_prompt: str) -> list[dict]:
     for turn in turns:
         if _is_bad(turn) or not (turn.agent.strip() or turn.think.strip()):
             continue
-        think = turn.think.strip()
+        think = _fix_third_person(turn.think.strip())
         agent = turn.agent.strip()
         content = f"<think>\n{think}\n</think>\n{agent}" if think else agent
         if not content.strip():
