@@ -56,14 +56,34 @@ def write_ws(rel, content):
 # ── Message helpers ───────────────────────────────────────────────────────────
 
 msgs = []
+_cmem: dict[int, str] = {}   # line → text, reset per session
 
 def sys_msg(c): msgs.append({"role": "system", "content": c})
-def usr(c):     msgs.append({"role": "user",   "content": c})
+
+def _cmem_header() -> str:
+    if not _cmem:
+        return ""
+    lines = "\n".join(f"  {k}: {v}" for k, v in sorted(_cmem.items()))
+    return f"YOUR SCRATCHPAD:\n{lines}\n\n"
+
+def usr(c, with_cmem=False):
+    """Append a user/observation message, optionally prefixed with current cmem state."""
+    content = (_cmem_header() + c) if with_cmem else c
+    msgs.append({"role": "user", "content": content})
 
 def ast(think, narrate, cmd_text):
     think_part = f"<think>\n{think.strip()}\n</think>\n" if think else ""
     msgs.append({"role": "assistant", "content":
         f"{think_part}{narrate.strip()}\n```\n{cmd_text.strip()}\n```\n<|eoc|>"})
+
+def cmem_write(line: int, text: str) -> str:
+    """Simulate /cmem w <line> <text> and return the observation."""
+    _cmem[line] = text
+    return f"> /cmem w {line} {text}\n[scratchpad line {line} set]"
+
+def cmem_del(line: int) -> str:
+    _cmem.pop(line, None)
+    return f"> /cmem d {line}\n[scratchpad line {line} deleted]"
 
 # ── Observation formatters ────────────────────────────────────────────────────
 
@@ -82,6 +102,16 @@ def fmt_shell(cmd, out):
 def fmt_patch(msg="[patch] Applied."):
     return f"> /patch\n{msg}"
 
+def fmt_patch_err(bad_path):
+    """Simulate the improved patch error message for a wrong path."""
+    return (
+        f"> /patch\n"
+        f"[patch] Error: file/directory specified in patch header does not exist"
+        f" — [Errno 2] No such file or directory: 'codelab/{bad_path}'\n"
+        f"[patch] Note: patch paths resolve relative to the harness working"
+        f" directory (codelab/), not the shell CWD."
+    )
+
 def fmt_pmem_r(body="[memory.md: empty]"):
     return f"> /pmem r\n{body}"
 
@@ -90,6 +120,15 @@ def fmt_pmem_w():
 
 def fmt_telegram(text):
     return f"> /telegram {text}\n[telegram] Message sent to Foxo."
+
+def fmt_compacted(summary=""):
+    """Simulate a mid-session compaction notice injected by the harness."""
+    body = summary or (
+        "Previous context condensed. Your task: build a Rust session-log "
+        "analyzer in session-analyzer/. Check your scratchpad (shown above) "
+        "for current progress, then re-read task.md before continuing."
+    )
+    return f"[Compacted summary: {body}]"
 
 # ── Rust source templates ─────────────────────────────────────────────────────
 
@@ -626,11 +665,210 @@ end-to-end before adding the stats module.
     _session_end(sa, smoke_log, report_content=None)
 
 
+# ── Variant: cmem-tracking (teaches correct scratchpad usage + compaction recovery) ──
+
+def build_session_cmem(task_text, sa, smoke_log):
+    # write parser.rs + record CWD and patch root in cmem
+    write_ws("session-analyzer/src/parser.rs", PARSER_RS)
+    ast(
+        think="""\
+Now I'll write parser.rs. The patch path must be relative to the harness
+working directory (codelab/), not my shell CWD (codelab/session-analyzer/).
+I'll record this in my scratchpad so I don't make the path mistake later.
+""",
+        narrate="Writing src/parser.rs. I'll note the patch path root in my scratchpad.",
+        cmd_text=patch_add("session-analyzer/src/parser.rs", PARSER_RS),
+    )
+    usr(fmt_patch())
+
+    # record patch path root and CWD in cmem
+    ast(
+        think="""\
+I should write down the key path facts now while they're fresh.
+cmem line 1: current step. Line 2: slow-state facts I'll need in every patch.
+""",
+        narrate="Recording path facts in my scratchpad before I forget.",
+        cmd_text="/cmem w 1 step 1/6 done — parser.rs written",
+    )
+    usr(cmem_write(1, "step 1/6 done — parser.rs written"), with_cmem=False)
+
+    ast(
+        think="Line 2 for slow-state: patch paths are always from codelab/, CWD is session-analyzer/ after cargo new.\n",
+        narrate="Noting the harness working directory for patch paths.",
+        cmd_text="/cmem w 2 patch paths: codelab/ root. shell CWD: codelab/session-analyzer/",
+    )
+    usr(cmem_write(2, "patch paths: codelab/ root. shell CWD: codelab/session-analyzer/"), with_cmem=False)
+
+    # write smoke main.rs
+    write_ws("session-analyzer/src/main.rs", MAIN_RS_SMOKE)
+    ast(
+        think="Now declare the parser module in main.rs and write a smoke test.\n",
+        narrate="Replacing main.rs with the smoke test.",
+        cmd_text=patch_update(
+            "session-analyzer/src/main.rs", "fn main()",
+            ["fn main() {", '    println!("Hello, world!");', "}"],
+            MAIN_RS_SMOKE.splitlines(),
+        ),
+    )
+    usr(fmt_patch(), with_cmem=True)
+
+    # update cmem step
+    ast(
+        think="Smoke main.rs is in place. Update scratchpad step counter.\n",
+        narrate="Updating scratchpad — both source files written.",
+        cmd_text="/cmem w 1 step 2/6 done — parser.rs + smoke main.rs written",
+    )
+    usr(cmem_write(1, "step 2/6 done — parser.rs + smoke main.rs written"), with_cmem=True)
+
+    # cargo build
+    build_out = run("cargo build 2>&1", cwd=sa)
+    ast(
+        think="Build to confirm both files compile before running.\n",
+        narrate="Building.",
+        cmd_text="$ cargo build",
+    )
+    usr(fmt_shell("cargo build", build_out), with_cmem=True)
+
+    # ── SIMULATED COMPACTION ───────────────────────────────────────────────────
+    # Inject a compacted summary — agent must use cmem to recover state
+    usr(fmt_compacted())
+
+    ast(
+        think="""\
+The context was compacted. My scratchpad shows:
+  1: step 2/6 done — parser.rs + smoke main.rs written
+  2: patch paths: codelab/ root. shell CWD: codelab/session-analyzer/
+
+The system prompt rules say to re-read task.md after a compacted summary.
+I'll do that now, then continue from step 3 (run the smoke test).
+""",
+        narrate="Context was compacted. I'll re-read task.md before continuing — scratchpad shows I'm at step 2/6.",
+        cmd_text="/read task.md",
+    )
+    usr(fmt_read("task.md", task_text, page=1), with_cmem=True)
+
+    # might need page 2
+    if max(1, -(-len(task_text.splitlines(keepends=True)) // 100)) > 1:
+        ast(
+            think="Page 1 of 2 — I need the second page too.\n",
+            narrate="Reading page 2 to get the full task.",
+            cmd_text="/read task.md",
+        )
+        usr(fmt_read("task.md", task_text, page=2), with_cmem=True)
+
+    # update cmem — now resuming smoke run
+    ast(
+        think="""\
+Task re-read. I'm at step 2/6 (parser.rs + smoke main.rs written, build clean).
+Next step is the smoke run. I'll update cmem.
+""",
+        narrate="Up to speed. Running the smoke test now.",
+        cmd_text="/cmem w 1 step 3/6 — running smoke test",
+    )
+    usr(cmem_write(1, "step 3/6 — running smoke test"), with_cmem=True)
+
+    # smoke run
+    smoke_cmd = f"cargo run -- ../logs/{smoke_log.name}"
+    smoke_out = run(f"{smoke_cmd} 2>&1", cwd=sa)
+    ast(
+        think="""\
+Running the smoke test. ../logs/ from inside session-analyzer/ resolves to
+codelab/logs/ — the symlink is set up.
+""",
+        narrate=f"Running smoke test against {smoke_log.name}.",
+        cmd_text=f"$ {smoke_cmd}",
+    )
+    usr(fmt_shell(smoke_cmd, smoke_out), with_cmem=True)
+
+    # update step
+    ast(
+        think="Smoke test passed. Updating scratchpad to step 4.\n",
+        narrate="Smoke test looks good. Updating scratchpad.",
+        cmd_text="/cmem w 1 step 4/6 — smoke test passed, writing stats.rs next",
+    )
+    usr(cmem_write(1, "step 4/6 — smoke test passed, writing stats.rs next"), with_cmem=True)
+
+    # rest is shared (stats, full main, run, report, pmem, telegram)
+    _session_end(sa, smoke_log, report_content=None)
+
+
+# ── Variant: patch-path-error (teaches harness working dir path reasoning) ────
+
+def build_session_patch_path(task_text, sa, smoke_log):
+    # write parser.rs with WRONG path first
+    ast(
+        think="""\
+Now I'll write src/parser.rs using /patch. I'll use the path src/parser.rs
+since my shell CWD is session-analyzer/ after the cd.
+""",
+        narrate="Writing src/parser.rs.",
+        cmd_text=patch_add("src/parser.rs", PARSER_RS),   # WRONG path
+    )
+    # do NOT write the file — let the error happen
+    usr(fmt_patch_err("src/parser.rs"))
+
+    # agent reads the error and corrects the path
+    write_ws("session-analyzer/src/parser.rs", PARSER_RS)
+    ast(
+        think="""\
+The patch failed:
+  [patch] Error: file/directory specified in patch header does not exist
+  [patch] Note: patch paths resolve relative to the harness working
+  directory (codelab/), not the shell CWD.
+
+I used src/parser.rs but /patch resolves from codelab/, not from
+codelab/session-analyzer/ (my current shell CWD). The correct path
+is session-analyzer/src/parser.rs.
+""",
+        narrate="Wrong path — /patch resolves from the harness working directory (codelab/), not the shell CWD. I need session-analyzer/src/parser.rs.",
+        cmd_text=patch_add("session-analyzer/src/parser.rs", PARSER_RS),
+    )
+    usr(fmt_patch())
+
+    # write smoke main.rs
+    write_ws("session-analyzer/src/main.rs", MAIN_RS_SMOKE)
+    ast(
+        think="""\
+Got it. All /patch paths must start from codelab/, so session-analyzer/src/...
+for everything inside the cargo project. I'll keep this in mind for the rest.
+""",
+        narrate="Replacing main.rs with the smoke test, using the correct patch path.",
+        cmd_text=patch_update(
+            "session-analyzer/src/main.rs", "fn main()",
+            ["fn main() {", '    println!("Hello, world!");', "}"],
+            MAIN_RS_SMOKE.splitlines(),
+        ),
+    )
+    usr(fmt_patch())
+
+    # first build
+    build_out = run("cargo build 2>&1", cwd=sa)
+    ast(
+        think="Both files are in place with correct paths. Building now.\n",
+        narrate="Building to confirm parser.rs compiles.",
+        cmd_text="$ cargo build",
+    )
+    usr(fmt_shell("cargo build", build_out))
+
+    # smoke run
+    smoke_cmd = f"cargo run -- ../logs/{smoke_log.name}"
+    smoke_out = run(f"{smoke_cmd} 2>&1", cwd=sa)
+    ast(
+        think="Build succeeded. Running the smoke test.\n",
+        narrate=f"Smoke test against {smoke_log.name}.",
+        cmd_text=f"$ {smoke_cmd}",
+    )
+    usr(fmt_shell(smoke_cmd, smoke_out))
+
+    _session_end(sa, smoke_log, report_content=None)
+
+
 # ── Top-level session runner ──────────────────────────────────────────────────
 
 def build_session(variant="clean"):
-    global WS, msgs
+    global WS, msgs, _cmem
     msgs = []
+    _cmem = {}
     WS = Path(tempfile.mkdtemp(prefix="codelab_gen_"))
     (WS / "logs").symlink_to(LOGS_DIR)
 
@@ -642,6 +880,10 @@ def build_session(variant="clean"):
             build_session_clean(task_text, sa, smoke_log)
         elif variant == "build-error":
             build_session_build_error(task_text, sa, smoke_log)
+        elif variant == "cmem-tracking":
+            build_session_cmem(task_text, sa, smoke_log)
+        elif variant == "patch-path-error":
+            build_session_patch_path(task_text, sa, smoke_log)
         else:
             raise ValueError(f"Unknown variant: {variant!r}")
     finally:
@@ -656,7 +898,7 @@ def main():
     ap.add_argument("--model", default="claude-sonnet-4-6",
                     help="model tag to embed in the record")
     ap.add_argument("--variant", default="clean",
-                    choices=["clean", "build-error"],
+                    choices=["clean", "build-error", "cmem-tracking", "patch-path-error"],
                     help="session variant (default: clean)")
     args = ap.parse_args()
 
