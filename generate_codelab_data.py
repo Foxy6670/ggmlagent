@@ -320,78 +320,163 @@ def patch_update(rel_path, anchor, old_lines, new_lines):
     return (f"/patch\n*** Begin Patch\n*** Update File: {rel_path}\n"
             f"@@ {anchor}\n{removes}\n{adds}\n*** End Patch")
 
-# ── Session builder ───────────────────────────────────────────────────────────
+# ── Buggy parser variant (missing #[derive(Default)]) ─────────────────────────
 
-def build_session():
-    global WS
-    WS = Path(tempfile.mkdtemp(prefix="codelab_gen_"))
-    log_link = WS / "logs"
-    log_link.symlink_to(LOGS_DIR)
+PARSER_RS_BUGGY = PARSER_RS.replace("#[derive(Default)]\n", "")
 
-    try:
-        task_text = TASK_FILE.read_text()
+# ── Session builder helpers ───────────────────────────────────────────────────
 
-        # ── Start ──────────────────────────────────────────────────────────
-        sys_msg(SYSTEM_PROMPT)
-        usr("Begin. Read your task file first.")
+def _session_start(task_text):
+    """Shared turns 1-4: read task, pmem r, cargo new. Returns (sa, smoke_log)."""
+    sys_msg(SYSTEM_PROMPT)
+    usr("Begin. Read your task file first.")
 
-        # Turn 1 — read task.md (page 1)
+    ast(
+        think="I need to read task.md to understand what I'm supposed to build.\n",
+        narrate="I'll read the task file first.",
+        cmd_text="/read task.md",
+    )
+    usr(fmt_read("task.md", task_text, page=1))
+
+    task_lines = task_text.splitlines(keepends=True)
+    if max(1, -(-len(task_lines) // 100)) > 1:
         ast(
-            think="""\
-I need to read task.md to understand what I'm supposed to build.
-""",
-            narrate="I'll read the task file first.",
+            think="That was page 1 of 2. I need to read the rest before I start.\n",
+            narrate="There's a second page — I'll read it.",
             cmd_text="/read task.md",
         )
-        usr(fmt_read("task.md", task_text, page=1))
+        usr(fmt_read("task.md", task_text, page=2))
 
-        # Turn 2 — task.md page 2 (122 lines → 2 pages)
-        task_lines = task_text.splitlines(keepends=True)
-        total_pages = max(1, -(-len(task_lines) // 100))
-        if total_pages > 1:
-            ast(
-                think="""\
-That was page 1 of 2. I need to read the rest of the task before I start.
-""",
-                narrate="There's a second page — I'll read it.",
-                cmd_text="/read task.md",
-            )
-            usr(fmt_read("task.md", task_text, page=2))
+    ast(
+        think="I should check my persistent memory for any prior notes about this task.\n",
+        narrate="I'll check persistent memory for any prior context.",
+        cmd_text="/pmem r",
+    )
+    usr(fmt_pmem_r())
 
-        # Turn 3 — check persistent memory
-        ast(
-            think="""\
-I should check my persistent memory for any prior notes about this task
-before beginning work.
-""",
-            narrate="I'll check persistent memory for any prior context.",
-            cmd_text="/pmem r",
-        )
-        usr(fmt_pmem_r())
-
-        # Turn 4 — Step 0: cargo new (all three commands chained)
-        cargo_init_cmd = "cargo new session-analyzer && cd session-analyzer && ls src/"
-        cargo_init_out = run(f"cargo new session-analyzer && ls session-analyzer/src/")
-        ast(
-            think="""\
+    cargo_init_cmd = "cargo new session-analyzer && cd session-analyzer && ls src/"
+    cargo_init_out = run("cargo new session-analyzer && ls session-analyzer/src/")
+    ast(
+        think="""\
 Step 0 says to chain all three commands on one line so the harness
 runs them as a single shell invocation. cargo new creates the project,
 cd moves into it, ls src/ confirms main.rs is there.
 """,
-            narrate="I'll initialize the Rust project with all three commands chained.",
-            cmd_text=f"$ {cargo_init_cmd}",
-        )
-        usr(fmt_shell(cargo_init_cmd, cargo_init_out))
+        narrate="I'll initialize the Rust project with all three commands chained.",
+        cmd_text=f"$ {cargo_init_cmd}",
+    )
+    usr(fmt_shell(cargo_init_cmd, cargo_init_out))
 
-        # Write Cargo.toml (cargo new creates its own, but verify)
-        # workspace now has session-analyzer/
-        sa = WS / "session-analyzer"
+    sa = WS / "session-analyzer"
 
-        # Turn 5 — write parser.rs
-        parser_patch = patch_add("session-analyzer/src/parser.rs", PARSER_RS)
-        write_ws("session-analyzer/src/parser.rs", PARSER_RS)
-        ast(
-            think="""\
+    log_files = sorted(LOGS_DIR.glob("*.log"))
+    if not log_files:
+        raise RuntimeError("No log files found in logs/")
+    smoke_log = log_files[-1]
+
+    return sa, smoke_log
+
+
+def _session_end(sa, smoke_log, report_content):
+    """Shared turns: stats.rs, full main.rs, final build+run, report, pmem, telegram."""
+
+    # write stats.rs
+    stats_patch = patch_add("session-analyzer/src/stats.rs", STATS_RS)
+    write_ws("session-analyzer/src/stats.rs", STATS_RS)
+    ast(
+        think="""\
+The smoke test output looks right. Now I'll write stats.rs.
+It uses crate::parser types, so I need the struct names to match.
+""",
+        narrate="Writing stats.rs.",
+        cmd_text=stats_patch,
+    )
+    usr(fmt_patch())
+
+    # update main.rs to full version
+    full_main_patch = patch_update(
+        "session-analyzer/src/main.rs",
+        "mod parser",
+        MAIN_RS_SMOKE.splitlines(),
+        MAIN_RS_FULL.splitlines(),
+    )
+    write_ws("session-analyzer/src/main.rs", MAIN_RS_FULL)
+    ast(
+        think="""\
+Now I'll replace the smoke-test main.rs with the full version that declares
+both mod parser and mod stats, adds fmt_duration, and loops over all
+log files to print the formatted report.
+""",
+        narrate="Replacing main.rs with the full implementation.",
+        cmd_text=full_main_patch,
+    )
+    usr(fmt_patch())
+
+    # final build
+    build_out = run("cargo build 2>&1", cwd=sa)
+    ast(
+        think="Let me build the complete implementation before running against all logs.\n",
+        narrate="Building the full implementation.",
+        cmd_text="$ cargo build",
+    )
+    usr(fmt_shell("cargo build", build_out))
+
+    # run against all logs
+    all_logs_cmd = "cargo run -- ../logs/*.log"
+    all_logs_obs, report_content = run_split(all_logs_cmd, cwd=sa)
+    ast(
+        think="""\
+The build succeeded. I'll run against all logs now with the glob pattern
+the task specified. The shell will expand ../logs/*.log to all .log files.
+""",
+        narrate="Running against all log files to produce the full report.",
+        cmd_text=f"$ {all_logs_cmd}",
+    )
+    usr(fmt_shell(all_logs_cmd, all_logs_obs))
+
+    # write analysis_report.md
+    report_patch = patch_add(
+        "analysis_report.md",
+        f"# Session Analysis Report\n\n```\n{report_content}\n```\n",
+    )
+    ast(
+        think="""\
+The report looks complete. The task says to copy it into
+../analysis_report.md using /patch. The patch path is relative to the
+harness working directory (codelab/), so the correct path is
+analysis_report.md — one level up from where I'm working in session-analyzer/.
+""",
+        narrate="Writing the report to analysis_report.md.",
+        cmd_text=report_patch,
+    )
+    usr(fmt_patch())
+
+    # pmem w
+    pmem_text = "task complete — built session-analyzer (Rust), parsed session logs, wrote analysis_report.md"
+    ast(
+        think="Task is done. I'll save a memory note then send the report to Foxo.\n",
+        narrate="Saving a completion note to persistent memory.",
+        cmd_text=f"/pmem w {pmem_text}",
+    )
+    usr(fmt_pmem_w())
+
+    # telegram
+    tg_msg = f"Session analyzer done. Report:\n\n{report_content}"
+    ast(
+        think="I'll send the report to Foxo now. Task is complete.\n",
+        narrate="Sending the report to Foxo via Telegram.",
+        cmd_text=f"/telegram {tg_msg}",
+    )
+    usr(fmt_telegram(tg_msg))
+
+
+# ── Variant: clean ────────────────────────────────────────────────────────────
+
+def build_session_clean(task_text, sa, smoke_log):
+    # write parser.rs (correct)
+    write_ws("session-analyzer/src/parser.rs", PARSER_RS)
+    ast(
+        think="""\
 Now I'll write src/parser.rs. The patch path must be relative to the
 harness working directory (codelab/), not my shell CWD. So the correct
 path is session-analyzer/src/parser.rs.
@@ -402,174 +487,180 @@ The parser needs to:
 - Collect [THINK], [AGENT], [CMD], [OBS] content per turn
 - Track first/last timestamps for duration
 """,
-            narrate="I'll write src/parser.rs using /patch.",
-            cmd_text=parser_patch,
-        )
-        usr(fmt_patch())
+        narrate="I'll write src/parser.rs using /patch.",
+        cmd_text=patch_add("session-analyzer/src/parser.rs", PARSER_RS),
+    )
+    usr(fmt_patch())
 
-        # Turn 6 — write smoke-test main.rs (before first build)
-        main_smoke_patch = patch_update(
-            "session-analyzer/src/main.rs",
-            "fn main()",
-            ["fn main() {", '    println!("Hello, world!");', "}"],
-            MAIN_RS_SMOKE.splitlines(),
-        )
-        write_ws("session-analyzer/src/main.rs", MAIN_RS_SMOKE)
-        ast(
-            think="""\
+    # write smoke main.rs
+    write_ws("session-analyzer/src/main.rs", MAIN_RS_SMOKE)
+    ast(
+        think="""\
 Before building I need to declare the parser module in main.rs,
 otherwise cargo won't compile parser.rs at all.
 I'll replace the default main with a smoke test that calls parse_log.
 """,
-            narrate="I'll replace main.rs with a smoke test that uses the parser.",
-            cmd_text=main_smoke_patch,
-        )
-        usr(fmt_patch())
-
-        # Turn 7 — cargo build (parser.rs + smoke main.rs)
-        build2_out = run("cargo build 2>&1", cwd=sa)
-        ast(
-            think="""\
-Both parser.rs and the smoke-test main.rs are in place. Let me build
-to check for compile errors before running.
-""",
-            narrate="Building to check parser.rs compiles.",
-            cmd_text="$ cargo build",
-        )
-        usr(fmt_shell("cargo build", build2_out))
-
-        # Turn 8 — cargo run smoke test on one log
-        log_files = sorted(LOGS_DIR.glob("*.log"))
-        if not log_files:
-            raise RuntimeError("No log files found in logs/")
-        smoke_log = log_files[-1]  # most recent
-        smoke_cmd = f"cargo run -- ../logs/{smoke_log.name}"
-        smoke_out = run(f"{smoke_cmd} 2>&1", cwd=sa)
-        ast(
-            think="""\
-I'll run the smoke test against the most recent log file.
-The path ../logs/ is relative to session-analyzer/, which resolves to
-codelab/logs/ in the harness — a symlink I set up earlier.
-I want to see a turn count that looks plausible given the session length.
-""",
-            narrate=f"Running smoke test against {smoke_log.name}.",
-            cmd_text=f"$ {smoke_cmd}",
-        )
-        usr(fmt_shell(smoke_cmd, smoke_out))
-
-        # Turn 9 — write stats.rs
-        stats_patch = patch_add("session-analyzer/src/stats.rs", STATS_RS)
-        write_ws("session-analyzer/src/stats.rs", STATS_RS)
-        ast(
-            think="""\
-The smoke test output looks right. Now I'll write stats.rs.
-It uses crate::parser types, so I need the struct names to match.
-I won't declare it in main.rs yet — I'll add both the module declaration
-and the full main.rs logic in one patch after writing stats.rs.
-""",
-            narrate="Writing stats.rs.",
-            cmd_text=stats_patch,
-        )
-        usr(fmt_patch())
-
-        # Turn 10 — update main.rs to full version (declares both modules)
-        full_main_patch = patch_update(
-            "session-analyzer/src/main.rs",
-            "mod parser",
+        narrate="I'll replace main.rs with a smoke test that uses the parser.",
+        cmd_text=patch_update(
+            "session-analyzer/src/main.rs", "fn main()",
+            ["fn main() {", '    println!("Hello, world!");', "}"],
             MAIN_RS_SMOKE.splitlines(),
-            MAIN_RS_FULL.splitlines(),
-        )
-        write_ws("session-analyzer/src/main.rs", MAIN_RS_FULL)
-        ast(
-            think="""\
-Now I'll replace smoke-test main.rs with the full version that declares
-both mod parser and mod stats, adds fmt_duration, and loops over all
-log files to print the formatted report.
-""",
-            narrate="Replacing main.rs with the full implementation.",
-            cmd_text=full_main_patch,
-        )
-        usr(fmt_patch())
+        ),
+    )
+    usr(fmt_patch())
 
-        # Turn 11 — cargo build full (both modules now declared)
-        build4_out = run("cargo build 2>&1", cwd=sa)
-        ast(
-            think="""\
-Let me build the complete implementation. Both modules are declared
-and stats.rs exists, so this should compile cleanly.
-""",
-            narrate="Building the full implementation.",
-            cmd_text="$ cargo build",
-        )
-        usr(fmt_shell("cargo build", build4_out))
+    # first build
+    build_out = run("cargo build 2>&1", cwd=sa)
+    ast(
+        think="Both parser.rs and the smoke-test main.rs are in place. Let me build.\n",
+        narrate="Building to check parser.rs compiles.",
+        cmd_text="$ cargo build",
+    )
+    usr(fmt_shell("cargo build", build_out))
 
-        # Turn 12 — cargo run on all logs
-        all_logs_cmd = "cargo run -- ../logs/*.log"
-        all_logs_obs, report_content = run_split(all_logs_cmd, cwd=sa)
-        ast(
-            think="""\
-The build succeeded. I'll run against all logs now with the glob pattern
-the task specified. The shell will expand ../logs/*.log to all .log files.
+    # smoke run
+    smoke_cmd = f"cargo run -- ../logs/{smoke_log.name}"
+    smoke_out = run(f"{smoke_cmd} 2>&1", cwd=sa)
+    ast(
+        think="""\
+I'll run the smoke test against the most recent log file.
+../logs/ is relative to session-analyzer/, pointing to codelab/logs/.
+I want to see a plausible turn count.
 """,
-            narrate="Running against all log files to produce the full report.",
-            cmd_text=f"$ {all_logs_cmd}",
-        )
-        usr(fmt_shell(all_logs_cmd, all_logs_obs))
+        narrate=f"Running smoke test against {smoke_log.name}.",
+        cmd_text=f"$ {smoke_cmd}",
+    )
+    usr(fmt_shell(smoke_cmd, smoke_out))
 
-        # Turn 13 — write analysis_report.md
-        # The task says to copy output into ../analysis_report.md
-        report_patch = patch_add(
-            "analysis_report.md",
-            f"# Session Analysis Report\n\n```\n{report_content}\n```\n",
-        )
-        ast(
-            think="""\
-The report looks complete. The task says to copy it into
-../analysis_report.md using /patch. The path ../analysis_report.md
-is relative to the harness working directory (codelab/), so the
-correct patch path is analysis_report.md (one level up from session-analyzer/).
+    _session_end(sa, smoke_log, report_content=None)
+
+
+# ── Variant: build-error (teaches Default trait error recovery) ───────────────
+
+def build_session_build_error(task_text, sa, smoke_log):
+    # write BUGGY parser.rs (missing #[derive(Default)])
+    write_ws("session-analyzer/src/parser.rs", PARSER_RS_BUGGY)
+    ast(
+        think="""\
+Now I'll write src/parser.rs. The patch path must be relative to the
+harness working directory (codelab/), not my shell CWD. So the correct
+path is session-analyzer/src/parser.rs.
+
+The parser needs to:
+- Read a log file line by line
+- Detect [SYS] Generation started to split turns
+- Collect [THINK], [AGENT], [CMD], [OBS] content per turn
+- Track first/last timestamps for duration
 """,
-            narrate="Writing the report to analysis_report.md.",
-            cmd_text=report_patch,
-        )
-        usr(fmt_patch())
+        narrate="I'll write src/parser.rs using /patch.",
+        cmd_text=patch_add("session-analyzer/src/parser.rs", PARSER_RS_BUGGY),
+    )
+    usr(fmt_patch())
 
-        # Turn 14 — /pmem w
-        pmem_text = "task complete — built session-analyzer (Rust), parsed session logs, wrote analysis_report.md"
-        ast(
-            think="""\
-Task is done. I'll save a brief memory note as the task requires,
-then send the report to Foxo via Telegram.
+    # write smoke main.rs
+    write_ws("session-analyzer/src/main.rs", MAIN_RS_SMOKE)
+    ast(
+        think="""\
+Before building I need to declare the parser module in main.rs,
+otherwise cargo won't compile parser.rs at all.
 """,
-            narrate="Saving a completion note to persistent memory.",
-            cmd_text=f"/pmem w {pmem_text}",
-        )
-        usr(fmt_pmem_w())
+        narrate="I'll replace main.rs with a smoke test that uses the parser.",
+        cmd_text=patch_update(
+            "session-analyzer/src/main.rs", "fn main()",
+            ["fn main() {", '    println!("Hello, world!");', "}"],
+            MAIN_RS_SMOKE.splitlines(),
+        ),
+    )
+    usr(fmt_patch())
 
-        # Turn 15 — /telegram
-        tg_msg = f"Session analyzer done. Report:\n\n{report_content}"
-        ast(
-            think="""\
-I'll send the report to Foxo now. Task is complete.
+    # first build — this WILL fail (no Default on Turn)
+    build_err_out = run("cargo build 2>&1", cwd=sa)
+    ast(
+        think="Both files are in place. Let me build to check for compile errors.\n",
+        narrate="Building to check parser.rs compiles.",
+        cmd_text="$ cargo build",
+    )
+    usr(fmt_shell("cargo build", build_err_out))
+
+    # agent sees the error and fixes it
+    parser_fix_patch = patch_update(
+        "session-analyzer/src/parser.rs",
+        "pub struct Turn",
+        ["pub struct Turn {"],
+        ["#[derive(Default)]", "pub struct Turn {"],
+    )
+    write_ws("session-analyzer/src/parser.rs", PARSER_RS)
+    ast(
+        think="""\
+The build failed. Reading the error: Turn::default() is called (via std::mem::take)
+but Turn doesn't implement the Default trait. The fix is straightforward:
+add #[derive(Default)] to the Turn struct. I'll patch that in now.
 """,
-            narrate="Sending the report to Foxo via Telegram.",
-            cmd_text=f"/telegram {tg_msg}",
-        )
-        usr(fmt_telegram(tg_msg))
+        narrate="The build failed — Turn needs #[derive(Default)] for std::mem::take. I'll patch it.",
+        cmd_text=parser_fix_patch,
+    )
+    usr(fmt_patch())
 
+    # rebuild — should succeed now
+    build_ok_out = run("cargo build 2>&1", cwd=sa)
+    ast(
+        think="I added the derive attribute. Let me rebuild to confirm it compiles now.\n",
+        narrate="Rebuilding after adding #[derive(Default)].",
+        cmd_text="$ cargo build",
+    )
+    usr(fmt_shell("cargo build", build_ok_out))
+
+    # smoke run
+    smoke_cmd = f"cargo run -- ../logs/{smoke_log.name}"
+    smoke_out = run(f"{smoke_cmd} 2>&1", cwd=sa)
+    ast(
+        think="""\
+Build succeeded. I'll run the smoke test to verify the parser works
+end-to-end before adding the stats module.
+""",
+        narrate=f"Running smoke test against {smoke_log.name}.",
+        cmd_text=f"$ {smoke_cmd}",
+    )
+    usr(fmt_shell(smoke_cmd, smoke_out))
+
+    _session_end(sa, smoke_log, report_content=None)
+
+
+# ── Top-level session runner ──────────────────────────────────────────────────
+
+def build_session(variant="clean"):
+    global WS, msgs
+    msgs = []
+    WS = Path(tempfile.mkdtemp(prefix="codelab_gen_"))
+    (WS / "logs").symlink_to(LOGS_DIR)
+
+    try:
+        task_text = TASK_FILE.read_text()
+        sa, smoke_log = _session_start(task_text)
+
+        if variant == "clean":
+            build_session_clean(task_text, sa, smoke_log)
+        elif variant == "build-error":
+            build_session_build_error(task_text, sa, smoke_log)
+        else:
+            raise ValueError(f"Unknown variant: {variant!r}")
     finally:
         shutil.rmtree(WS, ignore_errors=True)
+
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate codelab training JSONL")
-    parser.add_argument("--out", default="-", help="output file (default: stdout)")
-    parser.add_argument("--model", default="claude-sonnet-4-6",
-                        help="model tag to embed in the record")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="Generate codelab training JSONL")
+    ap.add_argument("--out", default="-", help="output file (default: stdout)")
+    ap.add_argument("--model", default="claude-sonnet-4-6",
+                    help="model tag to embed in the record")
+    ap.add_argument("--variant", default="clean",
+                    choices=["clean", "build-error"],
+                    help="session variant (default: clean)")
+    args = ap.parse_args()
 
-    build_session()
+    build_session(variant=args.variant)
 
     record = {"model": args.model, "messages": msgs}
     out_text = json.dumps(record, ensure_ascii=False) + "\n"
@@ -578,7 +669,8 @@ def main():
         sys.stdout.write(out_text)
     else:
         Path(args.out).write_text(out_text, encoding="utf-8")
-        print(f"Wrote {len(msgs)} messages → {args.out}", file=sys.stderr)
+        n_turns = sum(1 for m in msgs if m["role"] == "assistant")
+        print(f"Wrote {n_turns} turns ({len(msgs)} messages) → {args.out}", file=sys.stderr)
 
 if __name__ == "__main__":
     main()
