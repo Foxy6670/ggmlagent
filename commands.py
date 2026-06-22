@@ -700,7 +700,11 @@ class CommandDispatcher:
         except _PatchError as e:
             return f"[patch] Error: {e}"
         except FileNotFoundError as e:
-            return f"[patch] Error: file not found — {e}"
+            return (
+                f"[patch] Error: file/directory specified in patch header does not exist — {e}\n"
+                f"[patch] Note: patch paths resolve relative to the harness working directory "
+                f"({_WORK_DIR}), not the shell CWD."
+            )
         return _format_patch_summary(result)
 
     def _dellines(self, args: list[str]) -> str:
