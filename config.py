@@ -55,6 +55,14 @@ BOONIE_ONION = os.environ.get("BOONIE_ONION", "")
 FURROW_ONION = os.environ.get("FURROW_ONION", "furrow@stt7f7qmyesgdy4tya2sq6trqhzw5b35ihwgcnvfxwkkuw2wgmxdywqd.onion")
 
 MAX_RESPONSE_TOKENS = 6144
+
+# OpenRouter — set OPENROUTER_API_KEY in .secrets to use cloud inference instead of KCPP.
+# Agent auto-selects OpenRouterClient when the key is present.
+OPENROUTER_API_KEY       = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL         = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.1-70b-instruct:free")
+OR_MIN_TURN_GAP          = float(os.environ.get("OR_MIN_TURN_GAP", "30"))   # seconds between turns
+OR_DAILY_TOKEN_BUDGET    = int(os.environ.get("OR_DAILY_TOKEN_BUDGET", "900000"))  # ~90% of 1M/day
+
 HORDE_API_KEY  = os.environ.get("HORDE_API_KEY", "0000000000")  # set in .secrets when using Horde
 # Comma-separated list of Horde model names to request, e.g. "koboldcpp/Qwen3-14B".
 # Empty = any available worker.
@@ -164,8 +172,12 @@ FILES  (working directory only — no .. escapes)
   /dir [path]              list directory
   /read <file>             read file (shows numbered lines)
   /append <file> <text>    append one line (content must be on the SAME line)
-  /appendlines <file>      append multiple lines — type one line per response,
-                           then 'done' to finish; use for multi-line entries
+  /appendlines <file>      append multiple lines — put ALL lines in the block body,
+                           with 'done' alone on the last line to finish:
+                             /appendlines notes.md
+                             first line of content
+                             second line of content
+                             done
   /edit <file>             find-and-replace a block of text — write all at once:
                              /edit config.py
                              temperature: 0.7

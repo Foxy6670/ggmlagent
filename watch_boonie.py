@@ -2,13 +2,21 @@
 """
 watch_boonie.py — live Boonie session monitor.
 
-Connects to MQ-Pro via Tor SSH, tails the latest session log,
-and formats output with colors. Filters out RAW/SSE noise.
+Connects to MQ-Pro and tails the latest session log, formatting output with
+colors and filtering RAW/SSE noise. Defaults to the Tor onion hidden service
+(works from anywhere); pass --lan to go direct over the home LAN when you're
+on the same network.
+
+Note: the MQ-Pro's direct LAN is relatively weak and its internet egress
+routes via RNDIS through the TUF — so --lan (direct to mangopi.lan) is a
+useful fallback when the onion path degrades (e.g. the TUF is busy).
 
 Usage:
-    python3 watch_boonie.py           # follow latest session
+    python3 watch_boonie.py           # follow latest session (over Tor onion)
+    python3 watch_boonie.py --lan     # follow latest session (direct LAN, no Tor)
     python3 watch_boonie.py --list    # list available sessions
     python3 watch_boonie.py <N>       # follow Nth most recent session (1=latest)
+    (--lan combines with --list / <N>.)
 """
 
 import re
@@ -17,9 +25,15 @@ import sys
 
 from config import BOONIE_ONION
 
-ONION  = BOONIE_ONION
-SSH    = ["ssh", "-o", "ProxyCommand=nc -x 127.0.0.1:9050 %h %p", ONION]
-LOGDIR = "ggmlagent/boonie/logs"
+# Default route: Tor onion hidden service — reachable from anywhere.
+ONION    = BOONIE_ONION
+SSH_TOR  = ["ssh", "-o", "ProxyCommand=nc -x 127.0.0.1:9050 %h %p", ONION]
+# Home-LAN route: direct, no Tor — used only when --lan is passed.
+LAN_HOST = "boonie@mangopi.lan"
+SSH_LAN  = ["ssh", LAN_HOST]
+# Active route; main() flips this to SSH_LAN when --lan is given.
+SSH      = SSH_TOR
+LOGDIR   = "ggmlagent/boonie/logs"
 
 RESET  = "\033[0m"
 BOLD   = "\033[1m"
@@ -32,8 +46,24 @@ RED    = "\033[31m"
 BLUE   = "\033[34m"
 
 
+class Unreachable(Exception):
+    """The SSH/Tor connection itself failed — distinct from a successful
+    command that simply returned no output. Lets callers tell 'host is down /
+    onion not yet published' apart from 'connected, but no logs exist'."""
+
+
 def ssh(cmd: str, timeout: int = 30) -> str:
-    r = subprocess.run(SSH + [cmd], capture_output=True, text=True, timeout=timeout)
+    try:
+        r = subprocess.run(SSH + [cmd], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise Unreachable(f"connection timed out after {timeout}s")
+    # ssh reserves exit code 255 for its own failures (connection refused/timeout,
+    # DNS, and ProxyCommand/Tor errors) — as opposed to the remote command's own
+    # non-zero exit (e.g. ls finding no matching files, which returns 1/2). So 255
+    # means we never reached the host; anything else means the command ran.
+    if r.returncode == 255:
+        err = [l for l in r.stderr.strip().splitlines() if l.strip()]
+        raise Unreachable(err[-1] if err else "ssh connection failed")
     return r.stdout.strip()
 
 
@@ -64,7 +94,7 @@ def format_line(line: str) -> str | None:
             not re.search(r"\[AGENT  \] .{5,}", line):
         return None
 
-    m = re.match(r"^(\d{2}:\d{2}:\d{2}\.\d{3}) \[(\w+)\s*\] (.*)$", line)
+    m = re.match(r"^(\d{2}:\d{2}:\d{2}\.\d{3}) \[(\w+)\s*\] ?(.*)$", line)
     if not m:
         return DIM + line + RESET
 
@@ -125,10 +155,30 @@ def tail_session(log_path: str) -> None:
 
 
 def main() -> None:
+    global SSH
     args = sys.argv[1:]
 
-    if "--list" in args:
+    use_lan = "--lan" in args
+    if use_lan:
+        args = [a for a in args if a != "--lan"]
+        SSH = SSH_LAN
+    route = "LAN" if use_lan else "Tor onion"
+
+    try:
         sessions = list_sessions()
+    except Unreachable as e:
+        print(f"{RED}[unreachable]{RESET} MQ-Pro not reachable over {route}: {e}",
+              file=sys.stderr)
+        if use_lan:
+            print(f"{DIM}On the LAN — is the MQ-Pro up? Its direct LAN is weak; "
+                  f"drop --lan to fall back to the Tor onion.{RESET}", file=sys.stderr)
+        else:
+            print(f"{DIM}After a reboot the hidden-service descriptor can take a few "
+                  f"minutes to republish — retry shortly, or use --lan if you're home.{RESET}",
+                  file=sys.stderr)
+        sys.exit(2)
+
+    if "--list" in args:
         if not sessions:
             print("No session logs found.")
             return
@@ -137,7 +187,6 @@ def main() -> None:
             print(f"  {GRAY}{i:2}.{RESET} {s}{marker}")
         return
 
-    sessions = list_sessions()
     if not sessions:
         print("No session logs found on MQ-Pro.", file=sys.stderr)
         sys.exit(1)

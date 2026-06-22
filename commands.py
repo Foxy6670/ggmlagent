@@ -35,6 +35,7 @@ from apply_patch import (
 _WORK_DIR = Path(".").resolve()
 _FILE_PAGE_LINES = 100
 _frwx_enabled = False   # set True by CommandDispatcher when --frwx is active
+_chroot_root: "Path | None" = None  # set by CommandDispatcher when --chroot is active
 
 _PAGE_SIZE      = 6000  # chars per web page; ~1 500 tokens — fits comfortably in context
 _TG_HISTORY_N   = 30    # recent Telegram messages shown by bare /telegram
@@ -116,7 +117,24 @@ class FileReader:
         return header + numbered
 
 
+_JAIL_BLOCKED_NAMES = frozenset({".secrets", "hosts.yml"})
+
 def _safe_path(path_str: str) -> Path:
+    if Path(path_str).name in _JAIL_BLOCKED_NAMES:
+        raise CommandError(f"[file] Access denied (credential file): {path_str}")
+    if _chroot_root is not None:
+        raw = Path(path_str)
+        if raw.is_absolute():
+            # Absolute paths are jailed: /etc/foo → <jail>/etc/foo
+            p = (_chroot_root / raw.relative_to("/")).resolve()
+            if not str(p).startswith(str(_chroot_root)):
+                raise CommandError(f"[file] Access denied (outside jail): {path_str}")
+        else:
+            # Relative paths resolve from the workspace (harness-managed files)
+            p = (_WORK_DIR / raw).resolve()
+            if not str(p).startswith(str(_WORK_DIR)):
+                raise CommandError(f"[file] Access denied (outside workspace): {path_str}")
+        return p
     p = (Path(".").resolve() / path_str).resolve()
     if not _frwx_enabled and not str(p).startswith(str(_WORK_DIR)):
         raise CommandError(f"[file] Access denied (outside working directory): {path_str}")
@@ -155,10 +173,13 @@ class CommandDispatcher:
         telegram: bool = False,
         monero: bool = False,
         sim=None,
+        chroot: str = "",
     ):
-        global _frwx_enabled
+        global _frwx_enabled, _chroot_root
         _frwx_enabled = frwx
         self._frwx = frwx
+        self._chroot: str = chroot  # jail path for shell dispatch; "" = disabled
+        _chroot_root = Path(chroot).resolve() if chroot else None
         self.cmem = cmem
         self.pmem = pmem
         self._file_reader = FileReader()
@@ -170,7 +191,8 @@ class CommandDispatcher:
         self._page_buf:    list[str] = []  # pages of the last /search or /goto result
         self._page_cur:    int = 0
         self._sim = sim
-        self._cwd: str = str(Path.cwd())  # persistent shell working directory
+        # When chroot is active the persistent CWD is jail-relative; start at jail root.
+        self._cwd: str = "/" if chroot else str(Path.cwd())
 
         # When simulating, the sim object replaces the real Telegram handler —
         # it duck-types `send`/`drain_inbox`/`history`. Moltbook write actions
@@ -297,25 +319,33 @@ class CommandDispatcher:
         """Run a shell block: pipe *body* as stdin to *cmd*, or run as bash script."""
         import shlex, tempfile, os
         cmd = cmd.strip()
+        # When chroot is active temp files must live inside the jail so the chrooted
+        # shell can reach them.  Write to <jail>/tmp/ on the host; reference as
+        # /tmp/<name> from inside the jail.
+        tmp_dir = os.path.join(self._chroot, "tmp") if self._chroot else None
         if cmd:
             # Write body to a temp file and pipe it as stdin.
             with tempfile.NamedTemporaryFile(mode="w", suffix=".tmp",
-                                             delete=False, encoding="utf-8") as f:
+                                             delete=False, encoding="utf-8",
+                                             dir=tmp_dir) as f:
                 f.write(body)
-                fname = f.name
-            actual = f"{prefix} {cmd} < {shlex.quote(fname)}"
+                fname_host = f.name
+            fname_ref = os.path.join("/tmp", os.path.basename(fname_host)) if self._chroot else fname_host
+            actual = f"{prefix} {cmd} < {shlex.quote(fname_ref)}"
         else:
             # No command specified — execute body as a bash script.
             with tempfile.NamedTemporaryFile(mode="w", suffix=".sh",
-                                             delete=False, encoding="utf-8") as f:
+                                             delete=False, encoding="utf-8",
+                                             dir=tmp_dir) as f:
                 f.write(body)
-                fname = f.name
-            actual = f"{prefix} bash {shlex.quote(fname)}"
+                fname_host = f.name
+            fname_ref = os.path.join("/tmp", os.path.basename(fname_host)) if self._chroot else fname_host
+            actual = f"{prefix} bash {shlex.quote(fname_ref)}"
         try:
             return self.dispatch(actual) or "[block] Shell block executed."
         finally:
             try:
-                os.unlink(fname)
+                os.unlink(fname_host)
             except OSError:
                 pass
 
@@ -1084,10 +1114,19 @@ class CommandDispatcher:
         # Append CWD capture using ';' so it runs regardless of exit code.
         cmd_with_cwd = cmd_str + f'; printf "\\n{_CWD_MARKER}%s\\n" "$(pwd)"'
 
-        if root:
+        if self._chroot:
+            # Run inside the jail.  The cd ensures the persistent CWD carries over
+            # since we can't use cwd= across the chroot boundary.
+            # Requires: <user> ALL=(root) NOPASSWD: /usr/sbin/chroot <jail> *
+            inner = f"cd {shlex.quote(self._cwd)} 2>/dev/null; {cmd_with_cwd}"
+            full_cmd = f"sudo chroot {shlex.quote(self._chroot)} bash -c {shlex.quote(inner)}"
+            cwd_arg = "/"
+        elif root:
             full_cmd = f"sudo -n bash -c {shlex.quote(cmd_with_cwd)}"
+            cwd_arg = self._cwd
         else:
             full_cmd = cmd_with_cwd
+            cwd_arg = self._cwd
 
         try:
             proc = subprocess.run(
@@ -1097,7 +1136,7 @@ class CommandDispatcher:
                 text=True,
                 timeout=_SHELL_TIMEOUT,
                 stdin=subprocess.DEVNULL,
-                cwd=self._cwd,
+                cwd=cwd_arg,
             )
             raw = proc.stdout + proc.stderr
 

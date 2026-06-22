@@ -30,6 +30,7 @@ from pathlib import Path
 import requests
 
 from kcpp_client import KoboldClient, _make_genkey
+import config as _cfg
 from memory import ContextMemory, PersistentMemory
 from commands import CommandDispatcher, is_command_line, is_shell_fence_open, is_fence_close
 from logger import SessionLogger
@@ -65,10 +66,11 @@ _THINK_CARRYOVER_CHARS = 400
 
 @dataclass
 class Turn:
-    agent_text:   str       = ""
-    think_text:   str       = ""   # content of <think>…</think>, for training
-    observations: list[str] = field(default_factory=list)
-    tg_context:   list[str] = field(default_factory=list)  # Telegram msgs that prompted this turn
+    agent_text:    str       = ""
+    think_text:    str       = ""   # content of <think>…</think>, for training
+    observations:  list[str] = field(default_factory=list)
+    tg_context:    list[str] = field(default_factory=list)  # Telegram msgs that prompted this turn
+    skip_training: bool      = False  # True for harness-injected bootstrap turns
 
 
 class Agent:
@@ -78,9 +80,15 @@ class Agent:
         telegram: bool = False,
         monero: bool = False,
         simulate: bool = False,
+        chroot: str = "",
     ):
         self._frwx     = frwx
-        self._client   = KoboldClient()
+        self._chroot   = chroot
+        if _cfg.OPENROUTER_API_KEY:
+            from openrouter_client import OpenRouterClient
+            self._client = OpenRouterClient()
+        else:
+            self._client = KoboldClient()
         self._cmem     = ContextMemory(self._client)
         self._pmem     = PersistentMemory()
 
@@ -104,7 +112,7 @@ class Agent:
         self._dispatch      = CommandDispatcher(
             self._cmem, self._pmem,
             frwx=frwx, telegram=telegram, monero=monero,
-            sim=self._sim,
+            sim=self._sim, chroot=chroot,
         )
         self._history:      list[Turn] = []
         self._log           = SessionLogger()
@@ -142,10 +150,52 @@ class Agent:
         else:
             self._log.system(f"Session init: wallet address unavailable ({resp})")
 
+    def _run_bootstrap(self) -> None:
+        """
+        Pre-run commands from bootstrap.md and inject as fake history turns.
+
+        Format — one command per line; lines starting with # become the
+        think_text for the following command (pattern-seeds the model):
+
+            # I should read my task file to understand my current objectives.
+            /read task.md
+
+        Bootstrap turns are flagged skip_training=True so they never appear
+        in the fine-tuning corpus — only real model output gets trained on.
+        """
+        bootstrap_path = Path("bootstrap.md")
+        if not bootstrap_path.exists():
+            return
+
+        think_buf: list[str] = []
+        for raw in bootstrap_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                think_buf.append(line[1:].strip())
+                continue
+
+            result = self._dispatch.dispatch(line)
+            if result is None:
+                think_buf.clear()
+                continue
+
+            agent_text = f"```\n{line}\n```\n<|eoc|>"
+            self._history.append(Turn(
+                agent_text=agent_text,
+                think_text=" ".join(think_buf),
+                observations=[result],
+                skip_training=True,
+            ))
+            think_buf.clear()
+            self._log.system(f"Bootstrap: {line}")
+
     def run(self):
         _print_banner()
         self._log.system("=== SESSION START ===")
         self._init_session()
+        self._run_bootstrap()
         _retry_delay = 30
         failures = 0
         eoc_streak = 0
@@ -1023,7 +1073,7 @@ class Agent:
             is_correction = any(
                 obs.startswith(p) for obs in turn.observations for p in self._BAD_OBS_PREFIXES
             )
-            if is_correction or not turn.agent_text.replace("<|eoc|>", "").strip():
+            if turn.skip_training or is_correction or not turn.agent_text.replace("<|eoc|>", "").strip():
                 continue
             # Telegram messages that arrived just before this turn become user
             # messages immediately preceding the assistant response, preserving
@@ -1188,15 +1238,24 @@ class Agent:
             cache (the about-to-generate position) rather than shifting
             stable content downstream.
         """
-        shell_section = (
-            "\n\n════════════════════════════════════════\n"
-            "SHELL  (full system access — --frwx mode)\n"
-            "  $ <command>    run as current user (30 s timeout, stdin closed)\n"
-            "  # <command>    run as root via sudo (same timeout)\n"
-            "  File commands (/read, /edit, etc.) have no path restrictions.\n"
-            "  Use <think> before any destructive or irreversible command.\n"
-            "════════════════════════════════════════"
-        ) if self._frwx else ""
+        if self._frwx:
+            _file_restriction = (
+                f"  File commands (/read, /edit, etc.): absolute paths are jailed "
+                f"to {self._chroot}; relative paths are workspace-scoped.\n"
+                if self._chroot else
+                "  File commands (/read, /edit, etc.) have no path restrictions.\n"
+            )
+            shell_section = (
+                "\n\n════════════════════════════════════════\n"
+                "SHELL  (full system access — --frwx mode)\n"
+                "  $ <command>    run as current user (30 s timeout, stdin closed)\n"
+                "  # <command>    run as root via sudo (same timeout)\n"
+                + _file_restriction +
+                "  Use <think> before any destructive or irreversible command.\n"
+                "════════════════════════════════════════"
+            )
+        else:
+            shell_section = ""
 
         system_content = (
             SYSTEM_PROMPT
