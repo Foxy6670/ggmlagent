@@ -7,12 +7,14 @@ file with timestamped lines tagged `[THINK]`, `[AGENT]`, `[CMD]`, `[OBS]`,
 
 ## Step 0 — Initialize the project (do this first, before writing any code)
 
+Chain all three commands on one line:
 ```
-$ cargo new session-analyzer
-$ cd session-analyzer
+$ cargo new session-analyzer && cd session-analyzer && ls src/
 ```
 
-Do not write any `.rs` files until this is done. Confirm with `$ ls src/`.
+If `cargo new` fails because the directory already exists, it is already set up —
+just run `$ cd session-analyzer && ls src/` to confirm and move on.
+Do not write any `.rs` files until `ls src/` shows `main.rs`.
 
 ## How to write and edit files
 
