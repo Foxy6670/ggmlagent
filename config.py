@@ -178,15 +178,7 @@ FILES  (working directory only — no .. escapes)
                              first line of content
                              second line of content
                              done
-  /edit <file>             find-and-replace a block of text — write all at once:
-                             /edit config.py
-                             temperature: 0.7
-                             ---
-                             temperature: 0.5
-                             done
-                           --- alone separates old from new; done alone finishes.
-                           Leave new text empty (--- then done immediately) to delete.
-  /patch                   apply a multi-file patch (preferred for code edits):
+  /patch                   preferred for all code and multi-line file edits:
                              /patch
                              *** Begin Patch
                              *** Update File: src/foo.py
@@ -198,6 +190,14 @@ FILES  (working directory only — no .. escapes)
                            Inside Update: '+' adds, '-' removes, ' ' (space) is context.
                            Use '@@ <anchor>' (function/section name) to disambiguate.
                            Patch applies automatically on '*** End Patch'.
+                           Use /patch for ALL source code and structured files.
+                           Use /appendlines for plain text/logs (append-only, no edits).
+                           Use /edit only for simple single-string replacements in text files:
+                             /edit notes.md
+                             old text
+                             ---
+                             new text
+                             done
   /dellines <file> <N[-M]> delete line N, or lines N through M (after /read)
   /del <file>              delete entire file
 
