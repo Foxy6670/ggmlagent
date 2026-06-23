@@ -112,6 +112,17 @@ def fmt_patch_err(bad_path):
         f" directory (codelab/), not the shell CWD."
     )
 
+def fmt_cmem_r_error():
+    return ("> /cmem r\n"
+            "[cmem] Context memory is already visible in your prompt — "
+            "you do not need to read it. Use /cmem w <line> <text> to write "
+            "or /cmem d <line> to delete.")
+
+def sys_ctx(pct: int, cwd: str = "~/ggml_codelab/session-analyzer") -> None:
+    """Inject the ephemeral per-turn system message with context percentage."""
+    msgs.append({"role": "system", "content":
+        f"[system: 22 Jun 2026, 21:15 | cwd: {cwd} | context: {pct}% used]"})
+
 def fmt_pmem_r(body="[memory.md: empty]"):
     return f"> /pmem r\n{body}"
 
@@ -863,6 +874,231 @@ for everything inside the cargo project. I'll keep this in mind for the rest.
     _session_end(sa, smoke_log, report_content=None)
 
 
+# ── Variant: pre-compaction (teach proactive cmem checkpoint on high ctx%) ────
+
+def build_session_pre_compaction(task_text, sa, smoke_log):
+    """Agent sees 73% context, checkpoints to cmem, compaction fires, recovers cleanly."""
+
+    # write parser.rs (no cmem yet — just doing the work)
+    write_ws("session-analyzer/src/parser.rs", PARSER_RS)
+    ast(
+        think="""\
+Now I'll write parser.rs. The patch path is relative to the harness working
+directory (codelab/), not my shell CWD (session-analyzer/ after cargo new).
+So the correct path is session-analyzer/src/parser.rs.
+""",
+        narrate="Writing src/parser.rs.",
+        cmd_text=patch_add("session-analyzer/src/parser.rs", PARSER_RS),
+    )
+    usr(fmt_patch())
+
+    # write smoke main.rs
+    write_ws("session-analyzer/src/main.rs", MAIN_RS_SMOKE)
+    ast(
+        think="Declaring the parser module in main.rs before building.\n",
+        narrate="Replacing main.rs with the smoke test.",
+        cmd_text=patch_update(
+            "session-analyzer/src/main.rs", "fn main()",
+            ["fn main() {", '    println!("Hello, world!");', "}"],
+            MAIN_RS_SMOKE.splitlines(),
+        ),
+    )
+    usr(fmt_patch())
+
+    # first build
+    build_out = run("cargo build 2>&1", cwd=sa)
+    ast(
+        think="Both files in place. Building to verify parser.rs compiles.\n",
+        narrate="Building.",
+        cmd_text="$ cargo build",
+    )
+    usr(fmt_shell("cargo build", build_out))
+
+    # smoke run
+    smoke_cmd = f"cargo run -- ../logs/{smoke_log.name}"
+    smoke_out = run(f"{smoke_cmd} 2>&1", cwd=sa)
+    ast(
+        think="Build passed. Running smoke test to verify end-to-end parsing.\n",
+        narrate=f"Running smoke test against {smoke_log.name}.",
+        cmd_text=f"$ {smoke_cmd}",
+    )
+    usr(fmt_shell(smoke_cmd, smoke_out))
+
+    # ── INJECT HIGH-CONTEXT SYSTEM MESSAGE ────────────────────────────────────
+    sys_ctx(73)
+
+    # Agent notices high context and proactively checkpoints BEFORE continuing
+    ast(
+        think="""\
+Context is at 73%. High enough that compaction could fire before I finish the
+task. If it fires without a checkpoint I'll lose track of where I am — the
+compacted summary only says "build a Rust session-log analyzer" and won't
+tell me what's already written or what's left.
+
+State right now:
+- parser.rs: written and compiling
+- smoke main.rs: written, smoke test passed
+- build: clean
+- Next: write stats.rs, replace main.rs with full version,
+         run against all logs, write analysis_report.md, pmem, telegram
+
+I'll also note the patch path rule — that's the slow-state fact I most
+often need: /patch paths resolve from codelab/, not from session-analyzer/.
+
+Checkpointing now in three cmem lines, then I'll keep going.
+""",
+        narrate="Context at 73% — checkpointing to scratchpad before compaction fires.",
+        cmd_text="/cmem w 1 step 4/6 - parser.rs + smoke main.rs written; build + smoke OK",
+    )
+    usr(cmem_write(1, "step 4/6 - parser.rs + smoke main.rs written; build + smoke OK"))
+
+    ast(
+        think="Path rule is the most critical slow-state fact to preserve.\n",
+        narrate="Noting the patch path root.",
+        cmd_text="/cmem w 2 patch paths: codelab/ root | shell CWD: session-analyzer/",
+    )
+    usr(cmem_write(2, "patch paths: codelab/ root | shell CWD: session-analyzer/"))
+
+    ast(
+        think="And the remaining steps, so recovery is instant if compaction fires now.\n",
+        narrate="Noting remaining work.",
+        cmd_text="/cmem w 3 NEXT: stats.rs -> full main.rs -> cargo run logs -> report -> pmem -> telegram",
+    )
+    usr(cmem_write(3, "NEXT: stats.rs -> full main.rs -> cargo run logs -> report -> pmem -> telegram"))
+
+    # ── COMPACTION FIRES ──────────────────────────────────────────────────────
+    usr(fmt_compacted())
+
+    # Recovery — cmem makes this trivial
+    ast(
+        think="""\
+Context was compacted. The checkpoint paid off — scratchpad shows:
+  1: step 4/6 - parser.rs + smoke main.rs written; build + smoke OK
+  2: patch paths: codelab/ root | shell CWD: session-analyzer/
+  3: NEXT: stats.rs -> full main.rs -> cargo run logs -> report -> pmem -> telegram
+
+I know exactly where I am. Per the system prompt, I should re-read task.md
+after a compacted summary before continuing.
+""",
+        narrate="Compaction fired — scratchpad has my checkpoint. Re-reading task.md to confirm, then continuing from step 5.",
+        cmd_text="/read task.md",
+    )
+    usr(fmt_read("task.md", task_text, page=1), with_cmem=True)
+
+    task_lines = task_text.splitlines(keepends=True)
+    if max(1, -(-len(task_lines) // 100)) > 1:
+        ast(
+            think="Page 2 to get the full task spec.\n",
+            narrate="Reading page 2.",
+            cmd_text="/read task.md",
+        )
+        usr(fmt_read("task.md", task_text, page=2), with_cmem=True)
+
+    # Update step and proceed
+    ast(
+        think="""\
+Task re-read. I'm at step 4/6 — parser.rs done, smoke test passed, next is stats.rs.
+I'll update cmem and move on.
+""",
+        narrate="All clear. Updating step counter and continuing with stats.rs.",
+        cmd_text="/cmem w 1 step 5/6 - writing stats.rs",
+    )
+    usr(cmem_write(1, "step 5/6 - writing stats.rs"), with_cmem=True)
+
+    _session_end(sa, smoke_log, report_content=None)
+
+
+# ── Variant: cmem-misuse (teach that /cmem r is wrong; cmem is always visible) ─
+
+def build_session_cmem_misuse(task_text, sa, smoke_log):
+    """Agent writes cmem then tries /cmem r to verify it — gets redirect, corrects."""
+
+    # write parser.rs
+    write_ws("session-analyzer/src/parser.rs", PARSER_RS)
+    ast(
+        think="""\
+Now I'll write parser.rs. Patch path must be relative to codelab/, so:
+session-analyzer/src/parser.rs.
+""",
+        narrate="Writing src/parser.rs.",
+        cmd_text=patch_add("session-analyzer/src/parser.rs", PARSER_RS),
+    )
+    usr(fmt_patch())
+
+    # Write cmem with step progress
+    ast(
+        think="I'll note my progress in the scratchpad.\n",
+        narrate="Noting step progress in scratchpad.",
+        cmd_text="/cmem w 1 step 1/6 - parser.rs written",
+    )
+    usr(cmem_write(1, "step 1/6 - parser.rs written"))
+
+    # Agent tries to read cmem to "verify" the write — common mistake
+    ast(
+        think="I'll read the scratchpad to confirm the write went through.\n",
+        narrate="Checking scratchpad.",
+        cmd_text="/cmem r",
+    )
+    usr(fmt_cmem_r_error())
+
+    # Agent corrects — next command pivots to smoke main.rs patch
+    write_ws("session-analyzer/src/main.rs", MAIN_RS_SMOKE)
+    ast(
+        think="""\
+Right — cmem is always visible in the 'YOUR SCRATCHPAD' section above. I
+don't need a read command; I can see it already. /cmem r is not a valid
+subcommand. The only operations are /cmem w <line> <text> and /cmem d <line>.
+
+Looking at the scratchpad now: line 1 shows "step 1/6 - parser.rs written"
+— the write went through fine. I'll continue with smoke main.rs.
+""",
+        narrate="Got it — cmem is always visible; no read command needed. The write went through. Continuing with main.rs.",
+        cmd_text=patch_update(
+            "session-analyzer/src/main.rs", "fn main()",
+            ["fn main() {", '    println!("Hello, world!");', "}"],
+            MAIN_RS_SMOKE.splitlines(),
+        ),
+    )
+    usr(fmt_patch())
+
+    # update step
+    ast(
+        think="Both source files written. Updating scratchpad.\n",
+        narrate="Updating scratchpad.",
+        cmd_text="/cmem w 1 step 2/6 - parser.rs + smoke main.rs written",
+    )
+    usr(cmem_write(1, "step 2/6 - parser.rs + smoke main.rs written"))
+
+    # build
+    build_out = run("cargo build 2>&1", cwd=sa)
+    ast(
+        think="Build to verify both files compile.\n",
+        narrate="Building.",
+        cmd_text="$ cargo build",
+    )
+    usr(fmt_shell("cargo build", build_out))
+
+    # smoke run
+    smoke_cmd = f"cargo run -- ../logs/{smoke_log.name}"
+    smoke_out = run(f"{smoke_cmd} 2>&1", cwd=sa)
+    ast(
+        think="Build passed. Running smoke test.\n",
+        narrate=f"Running smoke test against {smoke_log.name}.",
+        cmd_text=f"$ {smoke_cmd}",
+    )
+    usr(fmt_shell(smoke_cmd, smoke_out))
+
+    # update step
+    ast(
+        think="Smoke test passed. Updating scratchpad and moving on to stats.rs.\n",
+        narrate="Smoke test passed. Updating scratchpad.",
+        cmd_text="/cmem w 1 step 4/6 - build + smoke OK; writing stats.rs next",
+    )
+    usr(cmem_write(1, "step 4/6 - build + smoke OK; writing stats.rs next"))
+
+    _session_end(sa, smoke_log, report_content=None)
+
+
 # ── Top-level session runner ──────────────────────────────────────────────────
 
 def build_session(variant="clean"):
@@ -884,6 +1120,10 @@ def build_session(variant="clean"):
             build_session_cmem(task_text, sa, smoke_log)
         elif variant == "patch-path-error":
             build_session_patch_path(task_text, sa, smoke_log)
+        elif variant == "pre-compaction":
+            build_session_pre_compaction(task_text, sa, smoke_log)
+        elif variant == "cmem-misuse":
+            build_session_cmem_misuse(task_text, sa, smoke_log)
         else:
             raise ValueError(f"Unknown variant: {variant!r}")
     finally:
@@ -898,7 +1138,8 @@ def main():
     ap.add_argument("--model", default="claude-sonnet-4-6",
                     help="model tag to embed in the record")
     ap.add_argument("--variant", default="clean",
-                    choices=["clean", "build-error", "cmem-tracking", "patch-path-error"],
+                    choices=["clean", "build-error", "cmem-tracking", "patch-path-error",
+                             "pre-compaction", "cmem-misuse"],
                     help="session variant (default: clean)")
     args = ap.parse_args()
 
