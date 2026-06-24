@@ -20,7 +20,7 @@ from datasets import load_dataset
 from trl import SFTTrainer, SFTConfig
 
 # ─── tuning knobs ──────────────────────────────────────────────────────
-MODEL       = "unsloth/Qwen3-14B"
+MODEL       = "unsloth/Qwen3-14B-bnb-4bit"  # pre-quantized — downloads ~8 GB, not ~28 GB fp16
 MAX_SEQ_LEN = 4096           # T4 (15 GiB) handles 14B-4bit at 4096 comfortably
                              # raise to 8192 if nvidia-smi shows >4 GiB free after load
 CORPUS      = "/content/boonie_corpus.jsonl"   # default Colab upload path
