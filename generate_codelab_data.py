@@ -1099,6 +1099,125 @@ Looking at the scratchpad now: line 1 shows "step 1/6 - parser.rs written"
     _session_end(sa, smoke_log, report_content=None)
 
 
+# ── Variant: brief-think (teach short decisive think chains) ──────────────────
+
+def build_session_brief_think(task_text, sa, smoke_log):
+    """Demonstrates tight 1-3 sentence think blocks — observe, decide, act."""
+
+    # write parser.rs
+    write_ws("session-analyzer/src/parser.rs", PARSER_RS)
+    ast(
+        think="Patch path is relative to codelab/, so session-analyzer/src/parser.rs.\n",
+        narrate="Writing src/parser.rs.",
+        cmd_text=patch_add("session-analyzer/src/parser.rs", PARSER_RS),
+    )
+    usr(fmt_patch())
+
+    # write smoke main.rs
+    write_ws("session-analyzer/src/main.rs", MAIN_RS_SMOKE)
+    ast(
+        think="Need to declare the module in main.rs or cargo won't compile parser.rs.\n",
+        narrate="Replacing main.rs with a smoke test.",
+        cmd_text=patch_update(
+            "session-analyzer/src/main.rs", "fn main()",
+            ["fn main() {", '    println!("Hello, world!");', "}"],
+            MAIN_RS_SMOKE.splitlines(),
+        ),
+    )
+    usr(fmt_patch())
+
+    # first build
+    build_out = run("cargo build 2>&1", cwd=sa)
+    ast(
+        think="Both files in place. Building to check for compile errors.\n",
+        narrate="Building.",
+        cmd_text="$ cargo build",
+    )
+    usr(fmt_shell("cargo build", build_out))
+
+    # smoke run
+    smoke_cmd = f"cargo run -- ../logs/{smoke_log.name}"
+    smoke_out = run(f"{smoke_cmd} 2>&1", cwd=sa)
+    ast(
+        think="Build clean. Running smoke test to verify parsing works end-to-end.\n",
+        narrate=f"Smoke test against {smoke_log.name}.",
+        cmd_text=f"$ {smoke_cmd}",
+    )
+    usr(fmt_shell(smoke_cmd, smoke_out))
+
+    # write stats.rs
+    write_ws("session-analyzer/src/stats.rs", STATS_RS)
+    ast(
+        think="Smoke output looks right. Writing stats.rs next.\n",
+        narrate="Writing stats.rs.",
+        cmd_text=patch_add("session-analyzer/src/stats.rs", STATS_RS),
+    )
+    usr(fmt_patch())
+
+    # full main.rs
+    write_ws("session-analyzer/src/main.rs", MAIN_RS_FULL)
+    ast(
+        think="stats.rs is in place. Replacing main.rs with the full version.\n",
+        narrate="Replacing main.rs with the full implementation.",
+        cmd_text=patch_update(
+            "session-analyzer/src/main.rs",
+            "mod parser",
+            MAIN_RS_SMOKE.splitlines(),
+            MAIN_RS_FULL.splitlines(),
+        ),
+    )
+    usr(fmt_patch())
+
+    # final build
+    build_out = run("cargo build 2>&1", cwd=sa)
+    ast(
+        think="Full implementation in place. Building before the final run.\n",
+        narrate="Building the full implementation.",
+        cmd_text="$ cargo build",
+    )
+    usr(fmt_shell("cargo build", build_out))
+
+    # run against all logs
+    all_logs_cmd = "cargo run -- ../logs/*.log"
+    all_logs_obs, report_content = run_split(all_logs_cmd, cwd=sa)
+    ast(
+        think="Build passed. Running against all logs to produce the report.\n",
+        narrate="Running against all log files.",
+        cmd_text=f"$ {all_logs_cmd}",
+    )
+    usr(fmt_shell(all_logs_cmd, all_logs_obs))
+
+    # write analysis_report.md
+    report_patch = patch_add(
+        "analysis_report.md",
+        f"# Session Analysis Report\n\n```\n{report_content}\n```\n",
+    )
+    ast(
+        think="Report looks complete. Writing it to analysis_report.md.\n",
+        narrate="Writing analysis_report.md.",
+        cmd_text=report_patch,
+    )
+    usr(fmt_patch())
+
+    # pmem
+    pmem_text = "task complete — built session-analyzer (Rust), parsed session logs, wrote analysis_report.md"
+    ast(
+        think="Task done. Saving a note to persistent memory then notifying Foxo.\n",
+        narrate="Saving completion note to persistent memory.",
+        cmd_text=f"/pmem w {pmem_text}",
+    )
+    usr(fmt_pmem_w())
+
+    # telegram
+    tg_msg = f"Session analyzer done. Report:\n\n{report_content}"
+    ast(
+        think="Memory saved. Sending the report to Foxo.\n",
+        narrate="Sending report to Foxo via Telegram.",
+        cmd_text=f"/telegram {tg_msg}",
+    )
+    usr(fmt_telegram(tg_msg))
+
+
 # ── Top-level session runner ──────────────────────────────────────────────────
 
 def build_session(variant="clean"):
@@ -1124,6 +1243,8 @@ def build_session(variant="clean"):
             build_session_pre_compaction(task_text, sa, smoke_log)
         elif variant == "cmem-misuse":
             build_session_cmem_misuse(task_text, sa, smoke_log)
+        elif variant == "brief-think":
+            build_session_brief_think(task_text, sa, smoke_log)
         else:
             raise ValueError(f"Unknown variant: {variant!r}")
     finally:
@@ -1139,7 +1260,7 @@ def main():
                     help="model tag to embed in the record")
     ap.add_argument("--variant", default="clean",
                     choices=["clean", "build-error", "cmem-tracking", "patch-path-error",
-                             "pre-compaction", "cmem-misuse"],
+                             "pre-compaction", "cmem-misuse", "brief-think"],
                     help="session variant (default: clean)")
     args = ap.parse_args()
 
