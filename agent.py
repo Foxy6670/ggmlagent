@@ -32,7 +32,7 @@ import requests
 from kcpp_client import KoboldClient, _make_genkey
 import config as _cfg
 from memory import ContextMemory, PersistentMemory
-from commands import CommandDispatcher, is_command_line, is_shell_fence_open, is_fence_close
+from commands import CommandDispatcher, is_command_line
 from logger import SessionLogger
 from loop_detector import CommandLoopDetector
 from job_manager import JobManager
@@ -66,11 +66,15 @@ _THINK_CARRYOVER_CHARS = 400
 
 @dataclass
 class Turn:
-    agent_text:    str       = ""
-    think_text:    str       = ""   # content of <think>…</think>, for training
-    observations:  list[str] = field(default_factory=list)
-    tg_context:    list[str] = field(default_factory=list)  # Telegram msgs that prompted this turn
-    skip_training: bool      = False  # True for harness-injected bootstrap turns
+    agent_text:    str        = ""
+    think_text:    str        = ""   # content of <think>…</think>, for training
+    # Each observation is {"role": "tool"|"system"|"user", "content": str}.
+    # Command results are role:"tool" (rendered inside <tool_response> by the
+    # Qwen3 template); harness nudges/errors are role:"system"; injected Foxo
+    # messages are role:"user".
+    observations:  list[dict] = field(default_factory=list)
+    tg_context:    list[str]  = field(default_factory=list)  # Telegram msgs that prompted this turn
+    skip_training: bool       = False  # True for harness-injected bootstrap turns
 
 
 class Agent:
@@ -181,11 +185,16 @@ class Agent:
                 think_buf.clear()
                 continue
 
-            agent_text = f"```\n{line}\n```\n<|eoc|>"
+            agent_text = (
+                "<tool_call>\n"
+                + json.dumps({"name": "run_command",
+                              "arguments": {"command": line}}, ensure_ascii=False)
+                + "\n</tool_call>"
+            )
             self._history.append(Turn(
                 agent_text=agent_text,
                 think_text=" ".join(think_buf),
-                observations=[result],
+                observations=[{"role": "tool", "content": result}],
                 skip_training=True,
             ))
             think_buf.clear()
@@ -198,8 +207,6 @@ class Agent:
         self._run_bootstrap()
         _retry_delay = 30
         failures = 0
-        eoc_streak = 0
-        EOC_STREAK_LIMIT = 5
         # Backoff schedule 30,60,120,240,300,300,300,300,300,300 → ~32 min
         # of total downtime before we exit. Watchdog or operator restarts.
         MAX_FAILURES = 10
@@ -211,32 +218,6 @@ class Agent:
                     self._step()
                     _retry_delay = 30
                     failures = 0
-                    # Detect <|eoc|> hallucination loop. Check observations for
-                    # the correction marker — the model often writes prose before
-                    # the token, so checking agent_text emptiness misses most cases.
-                    # Keep the correction turns in history so the model can see its
-                    # own corrections; pruning them removes the feedback and makes
-                    # things worse. After EOC_STREAK_LIMIT consecutive corrections,
-                    # context is saturated — end session for watchdog restart.
-                    _EOC_MARKER = "do not write it yourself"
-                    if self._history and any(
-                        _EOC_MARKER in obs for obs in self._history[-1].observations
-                    ):
-                        eoc_streak += 1
-                        self._log.system(
-                            f"<|eoc|> correction streak={eoc_streak}"
-                        )
-                        if eoc_streak >= EOC_STREAK_LIMIT:
-                            msg = (
-                                f"<|eoc|> hallucination loop detected "
-                                f"({eoc_streak} consecutive corrections) — "
-                                "context likely saturated, ending session."
-                            )
-                            print(f"\n{_YELLOW}[agent] {msg}{_RESET}", flush=True)
-                            self._log.system(msg)
-                            return
-                    else:
-                        eoc_streak = 0
                     continue
                 except requests.exceptions.ConnectionError as e:
                     err = e
@@ -316,361 +297,37 @@ class Agent:
         print(f"\n{_CYAN}[agent {now}{ctx_str}]{_RESET} ", end="", flush=True)
         self._log.system(f"Generation started (genkey={genkey})")
 
-        turn          = Turn()
+        turn            = Turn()
         turn.tg_context = list(self._pending_tg)  # snapshot before they're cleared
-        in_think      = False
-        cur_line      = ""
-        aborted       = False
-        paused        = False
-        blank_lines   = 0
-        prose_lines   = 0   # non-blank content lines without a command
-        hit_max_tokens = False
-        # Markdown shell fences (```bash / ``` ... ```) are accumulated and
-        # dispatched as a single `$ <cmd>` shell invocation when the closing
-        # fence arrives. Modern instruct models default to this syntax.
-        in_shell_block  = False
-        shell_buffer:  list[str] = []
-        in_body_block   = False
-        body_block_is_cmd = False   # True = ``` (execute), False = """ / ''' (text only)
-        body_block_delim = ""
-        body_block_lines: list[str] = []
+        in_think        = False
+        paused          = False
 
+        # Stream tokens.  Generation stops naturally at </tool_call> (the stop
+        # sequence) once the model closes its tool call — no mid-stream abort or
+        # fence detection needed.  We only track <think> here so reasoning is
+        # shown dimmed, kept out of agent_text, and captured for training.
         try:
             for token in token_iter:
-                cur_line += token
-
-                was_thinking = in_think
-                if not in_think and "<think>" in cur_line:
+                if "<think>" in token and not in_think:
                     in_think = True
-                if in_think and "</think>" in cur_line:
-                    in_think = False
-                    # Discard everything accumulated in cur_line during the
-                    # think block (including the synthetic </think> tag itself).
-                    # If we don't clear here, that content bleeds into the very
-                    # next newline-split and the first segment passed to
-                    # handle_pending_input / is_command_line is "<think>" or a
-                    # reasoning line instead of the real command/content.
-                    cur_line = ""
+                closing = "</think>" in token
 
-                # Strip stray </think> that appears outside any think block.
-                # The model occasionally emits an extra closing tag after the
-                # real </think>; letting it through creates confusing [THINK]
-                # log entries and pollutes agent_text.
-                if not in_think and not was_thinking and "</think>" in token:
-                    stripped_token = token.replace("</think>", "")
-                    # Undo the already-appended stray tag from cur_line.
-                    cur_line = cur_line[: len(cur_line) - len(token)] + stripped_token
-                    token = stripped_token
-                    if not token:
-                        continue
-
-                if in_think or was_thinking or "<think>" in token or "</think>" in token:
+                display_dim = in_think or closing
+                if display_dim:
                     print(f"{_DIM}{token}{_RESET}", end="", flush=True)
                 else:
                     print(token, end="", flush=True)
+                self._log.token(token, "THINK" if display_dim else "AGENT")
 
-                kind = "THINK" if (in_think or was_thinking) else "AGENT"
-                self._log.token(token, kind)
-
-                # Only accumulate non-think content into agent_text.
-                # Think-block tokens (including synthetic <think>/<think> tags
-                # emitted by the client) must never enter the stored assistant
-                # message — they would pollute the model's history and cause it
-                # to re-enter reasoning mode on every subsequent turn.
-                is_think_token = in_think or was_thinking or "<think>" in token or "</think>" in token
-                if not is_think_token:
+                if closing:
+                    before, _, after = token.partition("</think>")
+                    turn.think_text += before.replace("<think>", "")
+                    in_think = False
+                    turn.agent_text += after
+                elif in_think:
+                    turn.think_text += token.replace("<think>", "")
+                else:
                     turn.agent_text += token
-                elif was_thinking and "</think>" not in token:
-                    turn.think_text += token
-
-                # Always reset cur_line on newlines — even inside a think block.
-                # Without this, the entire reasoning content accumulates in
-                # cur_line and then bleeds through when the first content token
-                # with a \n arrives, causing think-block lines to be mistakenly
-                # passed to handle_pending_input or is_command_line.
-                if "\n" in token and in_think:
-                    _, _, cur_line = cur_line.rpartition("\n")
-
-                if "\n" in token and not in_think:
-                    segments = cur_line.split("\n")
-                    for completed in segments[:-1]:
-                        stripped = completed.strip()
-                        if not stripped:
-                            blank_lines += 1
-                            if blank_lines >= 8:
-                                self._client.abort(genkey)
-                                aborted = True
-                                obs = (
-                                    "[system] Generation stalled — only blank lines produced "
-                                    "after think block. Issue your next command directly."
-                                )
-                                self._log.system(f"Abort sent (genkey={genkey}), blank-line stall")
-                                self._record_obs(turn, "", obs, command=False)
-                                break
-                            continue
-                        blank_lines = 0
-
-                        # Markdown shell fences (```bash ... ```) are accumulated
-                        # and dispatched as one `$ <cmd>` invocation. Pending
-                        # batch modes (/appendlines, /edit, /patch) take priority
-                        # so shell-script content destined for a file isn't
-                        # intercepted as a command.
-                        if self._dispatch.pending is None:
-                            if in_shell_block:
-                                if is_fence_close(stripped):
-                                    cmd_str = "\n".join(shell_buffer).strip()
-                                    _trim_agent_text(turn, stripped)
-                                    in_shell_block = False
-                                    shell_buffer = []
-                                    if not cmd_str:
-                                        prose_lines = 0
-                                        continue
-                                    if not self._frwx:
-                                        self._client.abort(genkey)
-                                        aborted = True
-                                        self._log.system(f"Abort sent (genkey={genkey}), shell fence without --frwx")
-                                        obs = (
-                                            "[system] Shell access requires --frwx flag. "
-                                            "Use a /command instead."
-                                        )
-                                        self._record_obs(turn, "```", obs, command=False)
-                                        break
-                                    actual = "$ " + cmd_str
-                                    self._client.abort(genkey)
-                                    aborted = True
-                                    self._log.command(actual)
-                                    self._log.system(f"Abort sent (genkey={genkey}), executing fenced shell")
-                                    result = self._run_command(actual)
-                                    prose_lines = 0
-                                    self._record_obs(turn, actual, result, command=True)
-                                    break
-                                else:
-                                    shell_buffer.append(completed)
-                                    continue
-                            elif is_shell_fence_open(stripped) and self._frwx:
-                                _trim_agent_text(turn, stripped)
-                                in_shell_block = True
-                                shell_buffer = []
-                                continue
-
-                            # ``` (bare) = command block: first line is the command,
-                            # remaining lines are the body.  Execute on close.
-                            # """ or ''' = text block: content is logged but never
-                            # executed — safe for drafts, notes, and long data.
-                            elif in_body_block:
-                                if stripped == body_block_delim:
-                                    in_body_block = False
-                                    # Strip <|eoc|> lines — model emits this as a stop
-                                    # signal before the closing fence; keep it out of
-                                    # command and body content.
-                                    lines = [l for l in body_block_lines
-                                             if l.strip() != "<|eoc|>"]
-                                    body_block_lines = []
-                                    if body_block_is_cmd:
-                                        cmd_line = lines[0].strip() if lines else ""
-                                        body = "\n".join(lines[1:])
-                                        # A `$ `/`# ` first line means the body is
-                                        # stdin for that one shell command.  If the
-                                        # body *also* holds shell-command lines the
-                                        # model meant them to run in sequence — but the
-                                        # bare-``` path would pipe them as stdin to the
-                                        # first command and silently drop them (exit 0,
-                                        # no output), which traps the model in a loop.
-                                        # Detect that and nudge toward single-line chaining.
-                                        # Body detection keys off `$ ` only: it's an
-                                        # unambiguous command marker, whereas `# ` lines
-                                        # are routinely real comments in a piped script.
-                                        cmd_is_shell = cmd_line.startswith("$ ") or (
-                                            cmd_line.startswith("# ") and not cmd_line.startswith("## ")
-                                        )
-                                        stacked = cmd_is_shell and any(
-                                            l.strip().startswith("$ ") for l in lines[1:]
-                                        )
-                                        if not cmd_line:
-                                            _trim_agent_text(turn, stripped)
-                                            obs = "[system] Command block closed with no command on the first line."
-                                            self._record_obs(turn, stripped, obs, command=False)
-                                        elif stacked:
-                                            _trim_agent_text(turn, stripped)
-                                            self._client.abort(genkey)
-                                            aborted = True
-                                            self._log.command(f"[block] {cmd_line}")
-                                            self._log.system(f"Abort sent (genkey={genkey}), stacked shell commands")
-                                            obs = (
-                                                "[system] Multiple shell commands in one block — only the first "
-                                                "would run (the rest were being piped to it as stdin and dropped). "
-                                                "Run one command per turn, or chain them on a single line with "
-                                                "`&&`, `;`, or `||`. The working directory persists between turns."
-                                            )
-                                            self._record_obs(turn, stripped, obs, command=False)
-                                        else:
-                                            # Don't trim the closing fence: _record_obs
-                                            # appends <|eoc|> after it, giving the correct
-                                            # training layout: ``` /cmd body ``` <|eoc|>
-                                            self._client.abort(genkey)
-                                            aborted = True
-                                            self._log.command(f"[block] {cmd_line}")
-                                            self._log.system(f"Abort sent (genkey={genkey}), command block closed")
-                                            result = self._dispatch.dispatch_block(cmd_line, body)
-                                            if cmd_line.lower().startswith("/telegram "):
-                                                self._pending_tg.clear()
-                                            prose_lines = 0
-                                            self._record_obs(turn, cmd_line, result, command=True)
-                                    else:
-                                        _trim_agent_text(turn, stripped)
-                                        n = len(lines)
-                                        self._log.system(f"Text block received: {n} line(s)")
-                                        obs = f"[text block: {n} line{'s' if n != 1 else ''}]"
-                                        self._record_obs(turn, stripped, obs, command=False)
-                                    break
-                                else:
-                                    body_block_lines.append(completed)
-                                    continue
-                            elif stripped == "```" and not in_shell_block:
-                                in_body_block = True
-                                body_block_is_cmd = True
-                                body_block_delim = "```"
-                                body_block_lines = []
-                                continue
-                            elif stripped in ('"""', "'''") and not in_shell_block:
-                                in_body_block = True
-                                body_block_is_cmd = False
-                                body_block_delim = stripped
-                                body_block_lines = []
-                                continue
-
-                        if self._dispatch.pending is not None:
-                            # appendlines, edit phases, and patch are batch:
-                            # process each line silently so the model writes the
-                            # full block in one generation.  Only abort when
-                            # pending clears.  Pass the raw line (no leading
-                            # strip) so patch markers and indentation survive.
-                            is_batch = self._dispatch.pending.mode in (
-                                "appendlines", "edit_old", "edit_new", "patch"
-                            )
-                            raw_line = completed.rstrip()
-                            self._log.pending_input(raw_line)
-                            result = self._dispatch.handle_pending_input(raw_line)
-                            session_ended = self._dispatch.pending is None
-                            if session_ended or not is_batch:
-                                _trim_agent_text(turn, stripped)
-                                self._client.abort(genkey)
-                                aborted = True
-                                self._log.system(
-                                    f"Abort sent (genkey={genkey}), "
-                                    f"pending {'complete' if session_ended else 'input'}"
-                                )
-                                self._record_obs(turn, stripped, result, command=False)
-                                break
-                            # else: batch line written, keep streaming
-
-                        elif _is_fake_incoming_telegram(stripped):
-                            _trim_agent_text(turn, stripped)
-                            self._client.abort(genkey)
-                            aborted = True
-                            self._log.system(f"Abort sent (genkey={genkey}), hallucinated incoming Telegram")
-                            obs = (
-                                "[system] You wrote a fake incoming Telegram message. "
-                                "Messages from Foxo arrive automatically — never fabricate them. "
-                                "Continue your task."
-                            )
-                            self._record_obs(turn, stripped, obs, command=False)
-                            break
-
-                        elif _is_obs_echo(stripped):
-                            _trim_agent_text(turn, stripped)
-                            self._client.abort(genkey)
-                            aborted = True
-                            self._log.system(f"Abort sent (genkey={genkey}), observation-echo hallucination")
-                            obs = (
-                                "[system] You wrote what a command response looks like, not a command. "
-                                "Issue the command directly with a leading slash, e.g. /mb read <id>."
-                            )
-                            self._record_obs(turn, stripped, obs, command=False)
-                            break
-
-                        elif _is_bracket_command(stripped):
-                            _trim_agent_text(turn, stripped)
-                            self._client.abort(genkey)
-                            aborted = True
-                            self._log.system(f"Abort sent (genkey={genkey}), bracket-command syntax")
-                            inner = stripped.lstrip("[").rstrip("]").strip()
-                            obs = (
-                                f"[system] Commands use a leading slash, not brackets. "
-                                f"Write '/{inner}' instead of '{stripped[:60]}'. "
-                                "Reissue the command now."
-                            )
-                            self._record_obs(turn, stripped, obs, command=False)
-                            break
-
-                        elif _is_fake_outgoing_telegram(stripped):
-                            _trim_agent_text(turn, stripped)
-                            self._client.abort(genkey)
-                            aborted = True
-                            self._log.system(f"Abort sent (genkey={genkey}), fake outgoing Telegram format")
-                            inner = stripped[len("[telegram]"):].strip()
-                            obs = (
-                                f"[system] Use /telegram to send a message, not [telegram]. "
-                                f"Write '/telegram {inner}' to send."
-                            )
-                            self._record_obs(turn, stripped, obs, command=False)
-                            break
-
-                        elif _is_gt_command(stripped, self._frwx):
-                            actual = stripped[2:]
-                            _trim_agent_text(turn, stripped)
-                            self._client.abort(genkey)
-                            aborted = True
-                            self._log.system(f"Abort sent (genkey={genkey}), bare '> ' command rejected")
-                            obs = (
-                                f"[system] Commands must be wrapped in triple-tick blocks, not prefixed with '> '. "
-                                f"Write:\n```\n{actual}\n```\nReissue the command now."
-                            )
-                            self._record_obs(turn, stripped, obs, command=False)
-                            break
-
-                        elif is_command_line(completed, self._frwx):
-                            _trim_agent_text(turn, stripped)
-                            self._client.abort(genkey)
-                            aborted = True
-                            self._log.system(f"Abort sent (genkey={genkey}), bare command rejected (not in block)")
-                            obs = (
-                                f"[system] Commands must be wrapped in triple-tick blocks, not issued as bare lines. "
-                                f"Write:\n```\n{stripped}\n```\nReissue the command now."
-                            )
-                            self._record_obs(turn, stripped, obs, command=False)
-                            break
-
-                        elif stripped == "<|eoc|>":
-                            _trim_agent_text(turn, stripped)
-                            self._client.abort(genkey)
-                            aborted = True
-                            self._log.system(f"Abort sent (genkey={genkey}), hallucinated <|eoc|>")
-                            obs = (
-                                "[system] The <|eoc|> marker is appended by the harness after each "
-                                "dispatched command — do not write it yourself. "
-                                "Issue your next command now."
-                            )
-                            self._record_obs(turn, stripped, obs, command=False)
-                            break
-
-                        else:
-                            prose_lines += 1
-                            if prose_lines >= 32:
-                                self._client.abort(genkey)
-                                aborted = True
-                                obs = (
-                                    "[system] You wrote a long response without issuing a command. "
-                                    "You are an autonomous agent — issue your next command now."
-                                )
-                                self._log.system(f"Abort sent (genkey={genkey}), prose monologue ({prose_lines} lines)")
-                                self._record_obs(turn, "", obs, command=False)
-                                break
-
-                    if aborted:
-                        break
-                    cur_line = segments[-1]
-
         except KeyboardInterrupt:
             paused = True
             print(f"\n{_YELLOW}[paused]{_RESET}", flush=True)
@@ -680,12 +337,14 @@ class Agent:
 
         self._log.flush_token_buf("AGENT")
         self._log.flush_token_buf("THINK")
-        hit_max_tokens = not aborted and bool(finish_info) and finish_info[0] == "length"
+        hit_max_tokens = (not paused) and bool(finish_info) and finish_info[0] == "length"
         if hit_max_tokens:
             self._log.system(f"Generation hit token limit (finish_reason=length, genkey={genkey})")
-        self._log.system(f"Generation {'paused' if paused else 'aborted' if aborted else 'completed'} (genkey={genkey})")
+        self._log.system(
+            f"Generation {'paused' if paused else 'completed'} (genkey={genkey})"
+        )
 
-        # If paused: prompt for a user message, inject it, then return.
+        # Paused: prompt for a message from Foxo, inject it, then return.
         # A second Ctrl-C at the prompt propagates up to run() to quit.
         if paused:
             print(f"{_YELLOW}Message to agent (Enter to resume, Ctrl-C to quit):{_RESET} ", end="", flush=True)
@@ -695,261 +354,96 @@ class Agent:
                 print(f"\n{_YELLOW}[agent] Quitting.{_RESET}")
                 raise KeyboardInterrupt
             if user_msg:
-                # Use the same format as real Telegram messages so the model
-                # recognises this as Foxo's voice and responds accordingly.
+                # Same format as real Telegram messages so the model recognises
+                # this as Foxo's voice and responds accordingly.
                 obs = f"[Foxo @ Telegram]: {user_msg}"
                 print(f"{_GREEN}[obs]{_RESET} {obs}", flush=True)
                 self._log.system(f"User injected message: {user_msg!r}")
                 self._log.observation(obs)
-                turn.observations.append(obs)
+                turn.observations.append({"role": "user", "content": obs})
                 self._history.append(turn)
             return
 
-        # If the stream ended while still inside a fenced shell block, dispatch
-        # whatever we've accumulated. Cases: closing fence arrived without a
-        # trailing newline, or generation hit max_tokens before writing the
-        # close — in both cases the model clearly intended to run a command.
-        if not aborted and in_shell_block:
-            tail = cur_line.strip()
-            if tail and not is_fence_close(tail):
-                shell_buffer.append(cur_line.rstrip())
-            cmd_str = "\n".join(shell_buffer).strip()
-            in_shell_block = False
-            shell_buffer = []
-            cur_line = ""
-            if cmd_str and self._frwx:
-                actual = "$ " + cmd_str
-                self._log.command(actual)
-                self._log.system(f"Executing fenced shell at end-of-stream (genkey={genkey})")
-                result = self._run_command(actual)
-                self._record_obs(turn, actual, result, command=True)
-                aborted = True
+        self._handle_completion(turn, hit_max_tokens)
 
-        # If the stream ended while inside a command body block (opened with ```
-        # but closing ``` arrived without a trailing newline, or generation hit
-        # max_tokens), dispatch whatever was accumulated.
-        if not aborted and in_body_block and body_block_is_cmd:
-            tail = cur_line.strip()
-            if tail and tail != body_block_delim and tail != "<|eoc|>":
-                body_block_lines.append(cur_line.rstrip())
-            in_body_block = False
-            lines = [l for l in body_block_lines if l.strip() != "<|eoc|>"]
-            body_block_lines = []
-            cmd_line = lines[0].strip() if lines else ""
-            body = "\n".join(lines[1:])
-            if cmd_line:
-                # Synthesize the closing fence so <|eoc|> lands after it.
-                turn.agent_text = turn.agent_text.rstrip("\n") + f"\n{body_block_delim}\n"
-                self._log.command(f"[block-eos] {cmd_line}")
-                self._log.system(f"Executing command block at end-of-stream (genkey={genkey})")
-                result = self._dispatch.dispatch_block(cmd_line, body)
-                if cmd_line.lower().startswith("/telegram "):
-                    self._pending_tg.clear()
-                self._record_obs(turn, cmd_line, result, command=True)
-                aborted = True
+    # ------------------------------------------------------------------
+    # Tool-call parsing and dispatch
+    # ------------------------------------------------------------------
 
-        # Bug fix: if the stream ended without a trailing newline, the last
-        # line never went through the newline-detection block.  Check it now.
-        if not aborted and not in_think:
-            stripped = cur_line.strip()
-            if stripped:
-                if self._dispatch.pending is not None:
-                    is_batch = self._dispatch.pending.mode in (
-                        "appendlines", "edit_old", "edit_new", "patch"
-                    )
-                    raw_line = cur_line.rstrip()
-                    self._log.pending_input(raw_line)
-                    result = self._dispatch.handle_pending_input(raw_line)
-                    session_ended = self._dispatch.pending is None
-                    if session_ended or not is_batch:
-                        self._record_obs(turn, stripped, result, command=False)
-                        aborted = True
-                    # else: batch mode, generation ended mid-entry without
-                    # 'done' — we'll inject a reminder below.
-                elif _is_fake_incoming_telegram(stripped):
-                    _trim_agent_text(turn, stripped)
-                    obs = (
-                        "[system] You wrote a fake incoming Telegram message. "
-                        "Messages from Foxo arrive automatically — never fabricate them. "
-                        "Continue your task."
-                    )
-                    self._record_obs(turn, stripped, obs, command=False)
-                    aborted = True
-                elif _is_obs_echo(stripped):
-                    _trim_agent_text(turn, stripped)
-                    obs = (
-                        "[system] You wrote what a command response looks like, not a command. "
-                        "Issue the command directly with a leading slash, e.g. /mb read <id>."
-                    )
-                    self._record_obs(turn, stripped, obs, command=False)
-                    aborted = True
-                elif _is_bracket_command(stripped):
-                    _trim_agent_text(turn, stripped)
-                    inner = stripped.lstrip("[").rstrip("]").strip()
-                    obs = (
-                        f"[system] Commands use a leading slash, not brackets. "
-                        f"Write '/{inner}' instead of '{stripped[:60]}'. "
-                        "Reissue the command now."
-                    )
-                    self._record_obs(turn, stripped, obs, command=False)
-                    aborted = True
-                elif _is_fake_outgoing_telegram(stripped):
-                    _trim_agent_text(turn, stripped)
-                    inner = stripped[len("[telegram]"):].strip()
-                    obs = (
-                        f"[system] Use /telegram to send a message, not [telegram]. "
-                        f"Write '/telegram {inner}' to send."
-                    )
-                    self._record_obs(turn, stripped, obs, command=False)
-                    aborted = True
-                elif stripped == "<|eoc|>":
-                    _trim_agent_text(turn, stripped)
-                    obs = (
-                        "[system] The <|eoc|> marker is appended by the harness after each "
-                        "dispatched command — do not write it yourself. "
-                        "Issue your next command now."
-                    )
-                    self._record_obs(turn, stripped, obs, command=False)
-                    aborted = True
-                elif _is_gt_command(stripped, self._frwx):
-                    actual = stripped[2:]
-                    _trim_agent_text(turn, actual)
-                    self._log.command(actual)
-                    result = self._run_command(actual)
-                    if actual.lower().startswith("/telegram "):
-                        self._pending_tg.clear()
-                    self._record_obs(turn, actual, result, command=True)
-                    aborted = True
-                elif is_command_line(cur_line, self._frwx):
-                    _trim_agent_text(turn, stripped)
-                    if stripped.lower().startswith("/telegram ") and \
-                            _is_fake_incoming_telegram(stripped[len("/telegram "):].lstrip()):
-                        obs = (
-                            "[system] Your /telegram message started with a fake Telegram header. "
-                            "Send only your own words — never include [name @ Telegram]: in the message. "
-                            "Continue your task."
-                        )
-                        self._record_obs(turn, stripped, obs, command=False)
-                    else:
-                        self._log.command(stripped)
-                        result = self._run_command(stripped)
-                        if stripped.lower().startswith("/telegram "):
-                            self._pending_tg.clear()
-                        self._record_obs(turn, stripped, result, command=True)
-                    aborted = True
+    def _handle_completion(self, turn: "Turn", hit_max_tokens: bool) -> None:
+        """
+        Parse the tool call out of the finished generation, dispatch it, and
+        record the result.  With </tool_call> as the stop sequence the closing
+        tag is stripped from the stream, so _normalize_tool_call_text re-attaches
+        it for a clean stored turn.
+        """
+        parsed = _parse_tool_call(turn.agent_text)
 
-        # If a batch session (appendlines/edit/patch) is still open when the
-        # generation ends, auto-close it so the next generation starts clean.
-        # This usually means the model closed its block without finishing the
-        # entry (NOT a real token limit — the finish_reason is unreliable here;
-        # see the KCPP abort/length quirk). Keeping the session open causes the
-        # model to confuse later shell commands for batch input and loop forever.
-        if not aborted and self._dispatch.pending is not None:
-            mode = self._dispatch.pending.mode
-            fp   = self._dispatch.pending.file_path
-            self._dispatch.pending = None
-            if mode == "appendlines":
+        if parsed and parsed[0] == "ok":
+            _, name, command, body = parsed
+            turn.agent_text = _normalize_tool_call_text(turn.agent_text)
+
+            if name and name != "run_command":
                 obs = (
-                    f"[appendlines:{fp}] Session ended before you closed the block — "
-                    "the lines written so far were saved. Write all lines in one block "
-                    "and end with done before closing it; use /appendlines again to add more."
+                    f"[system] Unknown tool {name!r}. The only tool is run_command — "
+                    "put your /command in its \"command\" argument."
                 )
-            elif mode in ("edit_old", "edit_new"):
+                self._record_obs(turn, "", obs, command=False)
+                return
+            if not command:
                 obs = (
-                    f"[edit:{fp}] Not applied — /edit needs the WHOLE edit in ONE "
-                    "block. Write the command, the exact old text, a line with only "
-                    "---, the new text, then a line with only done, all before you "
-                    f"close the block:\n/edit {fp}\n<exact old text>\n---\n<new text>\ndone"
+                    "[system] Your tool call had no command. Put the /command in the "
+                    "\"command\" argument, e.g. {\"command\": \"/mb home\"}."
                 )
-            elif mode == "patch":
-                obs = (
-                    "[patch] Not applied — write the entire patch in ONE block, "
-                    "through its closing '*** End Patch' line, before you close the "
-                    "block. Reissue /patch and include the full patch this time."
-                )
+                self._record_obs(turn, "", obs, command=False)
+                return
+
+            if body.strip():
+                self._log.command(f"[block] {command}")
+                result = self._dispatch.dispatch_block(command, body)
             else:
-                obs = None
-            if obs is not None:
-                print(f"\n{_GREEN}[obs]{_RESET} {obs}", flush=True)
-                self._log.observation(obs)
-                turn.observations.append(obs)
+                self._log.command(command)
+                result = self._run_command(command)
+            if command.lower().startswith("/telegram"):
+                self._pending_tg.clear()
+            self._record_obs(turn, command, result, command=True)
+            return
 
-        # _record_obs already appended the turn when a command was found.
-        # Only append here for clean (no-command) completions.
-        if not aborted:
-            # Strip stray partial-command lines from the tail of agent_text.
-            # These appear when max_tokens cuts the model off mid-command
-            # (e.g. it starts typing "/cmem r 1" but only the first BPE
-            # sub-token "/cm" arrives before the budget runs out).  The
-            # fragment isn't a valid command so it was never dispatched or
-            # trimmed, but leaving it in the assistant message causes the
-            # model to echo it on every subsequent turn.
-            lines = turn.agent_text.splitlines()
-            dropped = []
-            while lines and lines[-1].lstrip().startswith("/") and not is_command_line(lines[-1], self._frwx):
-                partial = lines[-1].strip()
-                self._log.system(f"Dropped stray partial command from agent_text: {partial!r}")
-                dropped.append(partial)
-                lines.pop()
-            turn.agent_text = "\n".join(lines)
+        if parsed and parsed[0] == "error":
+            # <tool_call> was opened but the JSON inside was unparseable.
+            turn.agent_text = turn.agent_text.rstrip()
+            obs = (
+                f"[system] Your tool call wasn't valid JSON ({parsed[1]}). Emit exactly:\n"
+                "<tool_call>\n"
+                "{\"name\": \"run_command\", \"arguments\": {\"command\": \"/your command\"}}\n"
+                "</tool_call>"
+            )
+            self._record_obs(turn, "", obs, command=False)
+            return
 
-            # Feed back an error for each dropped fragment so the model knows
-            # the command was never executed and must be reissued in full.
-            # The detection ("starts with / but isn't a recognised /command")
-            # catches two distinct cases:
-            #   1) generation truly cut off mid-token (e.g. emitted '/cm' when
-            #      it meant '/cmem w 1 ...');
-            #   2) model wrote a complete-but-invalid /command name (e.g.
-            #      '/monero_start.sh', thinking a shell script is a /command).
-            # We can't distinguish these reliably, so the error names both
-            # possibilities and points at the shell escape hatch when --frwx
-            # is enabled (script-as-/command is the most common case there).
-            shell_hint = (
-                "  If you meant to run a shell script or system command, prefix "
-                "with $ for user (`$ ./monero_start.sh`) or # for root.\n"
-            ) if self._frwx else ""
-            for partial in dropped:
-                obs = (
-                    f"[error] Unrecognised command: {partial!r}.\n"
-                    "  This either generated past the token limit before "
-                    "completing, or isn't a valid /command name.\n"
-                    + shell_hint +
-                    "  Check the COMMANDS section of your task prompt and "
-                    "reissue."
-                )
-                print(f"\n{_GREEN}[obs]{_RESET} {obs}", flush=True)
-                self._log.observation(obs)
-                turn.observations.append(obs)
+        # No <tool_call> at all — model produced prose only.
+        if hit_max_tokens:
+            obs = (
+                "[system] Your response was cut off by the token limit before you "
+                "issued a tool call. Your think block was too long. Next response: "
+                "skip <think> and emit only the <tool_call> block."
+            )
+            self._log.system("Generation hit token limit without tool call — hard nudge")
+            self._record_obs(turn, "", obs, command=False)
+            return
 
-            # If the model produced content but no command, inject a nudge.
-            if not turn.observations:
-                if hit_max_tokens:
-                    # Think block exhausted the token budget before a command
-                    # could be issued. Explicitly tell the model to skip think
-                    # and write the command bare.
-                    obs = (
-                        "[system] Your response was cut off by the token limit "
-                        "before you issued a command. Your think block was too long. "
-                        "On your next response write ONLY the command — no <think> block, "
-                        "no prose, just the command line."
-                    )
-                    self._log.system("Generation hit token limit without command — hard nudge")
-                elif turn.agent_text.strip():
-                    obs = (
-                        "[system] Response completed without issuing a command. "
-                        "Issue your next command now."
-                    )
-                    self._log.system("Generation ended with prose but no command — nudging")
-                else:
-                    obs = None
+        if turn.agent_text.strip():
+            obs = (
+                "[system] Response completed without a tool call. Every action goes "
+                "through a <tool_call> block — issue your next command now."
+            )
+            self._log.system("Generation ended with prose but no tool call — nudging")
+            self._record_obs(turn, "", obs, command=False)
+            return
 
-                if obs:
-                    print(f"\n{_GREEN}[obs]{_RESET} {obs}", flush=True)
-                    self._log.observation(obs)
-                    turn.observations.append(obs)
-
-            if turn.agent_text.strip() or turn.observations:
-                self._history.append(turn)
+        # Nothing usable produced — keep the turn only if it carries observations.
+        if turn.observations:
+            self._history.append(turn)
 
     # ------------------------------------------------------------------
     # Command dispatch with timeout and background-job support
@@ -1015,21 +509,24 @@ class Agent:
     # ------------------------------------------------------------------
 
     def _record_obs(self, turn: Turn, text: str, result: str, *, command: bool):
-        """Record an observation and commit the turn to history."""
+        """Record an observation and commit the turn to history.
+
+        command=True  → a dispatched command's result, stored as role:"tool"
+                        (the Qwen3 template wraps it in <tool_response>).
+        command=False → a harness nudge or error, stored as role:"system".
+        The command itself is NOT echoed into the observation — it already
+        lives in the preceding assistant turn's <tool_call> block.
+        """
         if command:
             loop_warn = self._loop_detector.record(text, result)
             if loop_warn:
                 result = result + "\n" + loop_warn
                 self._log.system(f"Loop detector fired: {loop_warn[:120]}")
-            # EOC marker: stored in agent_text so training data shows every
-            # dispatched command terminated with <|eoc|>, teaching the model
-            # that commands are one-liners that end the turn.
-            turn.agent_text = turn.agent_text.rstrip("\n") + "\n<|eoc|>"
-        prefix = "> " if command else ""
+        role = "tool" if command else "system"
         print(f"\n{_GREEN}[obs]{_RESET} {result}", flush=True)
         self._log.observation(result)
-        turn.observations.append(f"{prefix}{text}\n{result}")
-        # Single point of history append — _step() must NOT append again after this.
+        turn.observations.append({"role": role, "content": result})
+        # Single point of history append — callers must NOT append again after this.
         self._history.append(turn)
         # Incremental save — a crash never loses the whole session.
         self._save_training_data()
@@ -1039,18 +536,13 @@ class Agent:
     # ------------------------------------------------------------------
 
     _BAD_OBS_PREFIXES = (
-        "[system] You generated a fake",
+        "[system] You wrote",
         "[system] Your /telegram message",
-        "[system] Blank-line stall",
-        "[system] You are generating blank",
-        "[system] Commands use a leading slash",
-        "[system] Use /telegram to send",
-        "[system] You wrote what a command response",
-        "[system] You wrote a long response without",
-        "[system] Response completed without issuing",
-        "[system] Your response was cut off by the token limit",
+        "[system] Your tool call",
+        "[system] Unknown tool ",
+        "[system] Response completed without",
+        "[system] Your response was cut off",
         "[system] Loop guard:",
-        "[system] The <|eoc|>",
     )
 
     def _save_training_data(self):
@@ -1071,9 +563,10 @@ class Agent:
         good_turns = 0
         for turn in self._history:
             is_correction = any(
-                obs.startswith(p) for obs in turn.observations for p in self._BAD_OBS_PREFIXES
+                obs["content"].startswith(p)
+                for obs in turn.observations for p in self._BAD_OBS_PREFIXES
             )
-            if turn.skip_training or is_correction or not turn.agent_text.replace("<|eoc|>", "").strip():
+            if turn.skip_training or is_correction or not turn.agent_text.strip():
                 continue
             # Telegram messages that arrived just before this turn become user
             # messages immediately preceding the assistant response, preserving
@@ -1085,7 +578,7 @@ class Agent:
             content = f"<think>\n{think}\n</think>\n{agent}" if think else agent
             messages.append({"role": "assistant", "content": content})
             for obs in turn.observations:
-                messages.append({"role": "system", "content": obs})
+                messages.append({"role": obs["role"], "content": obs["content"]})
             good_turns += 1
 
         if good_turns < 3:
@@ -1204,6 +697,14 @@ class Agent:
                 self._record_obs(turn, stripped, obs, command=False)
                 return
 
+            # Synthesize the assistant turn as a tool call so teleop sessions
+            # produce training data in the same native format the model emits.
+            turn.agent_text = (
+                "<tool_call>\n"
+                + json.dumps({"name": "run_command",
+                              "arguments": {"command": stripped}}, ensure_ascii=False)
+                + "\n</tool_call>"
+            )
             result = self._run_command(stripped)
             if stripped.lower().startswith("/telegram "):
                 self._pending_tg.clear()
@@ -1298,13 +799,13 @@ class Agent:
             messages.append({"role": "system", "content": "Begin. Read your task file first."})
         else:
             for turn in self._history:
-                if turn.agent_text.replace("<|eoc|>", "").strip():
+                if turn.agent_text.strip():
                     messages.append({"role": "assistant", "content": turn.agent_text.rstrip()})
                 for obs in turn.observations:
-                    content = _compress_obs_for_history(obs) if compress else obs
-                    messages.append({"role": "system", "content": content})
+                    content = _compress_obs_for_history(obs["content"]) if compress else obs["content"]
+                    messages.append({"role": obs["role"], "content": content})
 
-            if messages[-1]["role"] in ("assistant", "system"):
+            if messages[-1]["role"] in ("assistant", "system", "tool"):
                 messages.append({"role": "system", "content": "Continue your task."})
 
         # Perspective corrections from previous turn's think block
@@ -1393,12 +894,18 @@ class Agent:
         # Format a readable transcript of the turns to be compacted.
         lines: list[str] = []
         for turn in to_compact:
-            cmds = [l.strip() for l in turn.agent_text.splitlines() if l.strip()]
-            if cmds:
-                lines.append("Agent: " + " | ".join(cmds))
+            parsed = _parse_tool_call(turn.agent_text)
+            if parsed and parsed[0] == "ok":
+                cmd = parsed[2] or "(tool call)"
+                if parsed[3].strip():
+                    cmd += " [+body]"
+                lines.append("Agent: " + cmd)
+            elif turn.agent_text.strip():
+                lines.append("Agent: " + turn.agent_text.strip()[:200])
             for obs in turn.observations:
-                body = obs[:1500]
-                if len(obs) > 1500:
+                content = obs["content"]
+                body = content[:1500]
+                if len(content) > 1500:
                     body = body.rstrip() + " […]"
                 lines.append("Result: " + body)
 
@@ -1449,16 +956,22 @@ class Agent:
             tg_verbatim.extend(turn.tg_context)
 
         compact_turn = Turn()
-        compact_turn.observations.append(
-            f"[Compacted summary of {n} earlier turns]\n{summary}\n\n"
-            "[Post-compaction: re-read task.md before continuing — "
-            "do not infer tasks from this summary alone.]"
-        )
+        compact_turn.observations.append({
+            "role": "system",
+            "content": (
+                f"[Compacted summary of {n} earlier turns]\n{summary}\n\n"
+                "[Post-compaction: re-read task.md before continuing — "
+                "do not infer tasks from this summary alone.]"
+            ),
+        })
         if tg_verbatim:
-            compact_turn.observations.append(
-                "[Telegram messages from compacted turns — preserved verbatim]\n"
-                + "\n".join(tg_verbatim)
-            )
+            compact_turn.observations.append({
+                "role": "user",
+                "content": (
+                    "[Telegram messages from compacted turns — preserved verbatim]\n"
+                    + "\n".join(tg_verbatim)
+                ),
+            })
         self._history[:n] = [compact_turn]
         msg = f"Compacted {n} turns into summary ({len(summary)} chars)."
         print(f"{_YELLOW}[agent] {msg}{_RESET}", flush=True)
@@ -1560,6 +1073,81 @@ class Agent:
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+_TOOL_CALL_OPEN = "<tool_call>"
+
+
+def _parse_tool_call(text: str):
+    """
+    Extract the tool call from a completed generation.
+
+    Returns:
+      ("ok", name, command, body)  — parsed successfully (command/body may be "")
+      ("error", reason)            — <tool_call> opened but the JSON is unparseable
+      None                         — no <tool_call> marker present at all
+
+    The model emits  <tool_call>\\n{"name": ..., "arguments": {...}}\\n</tool_call>
+    but </tool_call> is the stop sequence, so it's stripped from the stream — we
+    only ever see the opening tag plus the JSON object, which is self-delimiting.
+    """
+    idx = text.find(_TOOL_CALL_OPEN)
+    if idx == -1:
+        return None
+    after = text[idx + len(_TOOL_CALL_OPEN):]
+    brace = after.find("{")
+    if brace == -1:
+        return ("error", "no JSON object after <tool_call>")
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(after[brace:])
+    except json.JSONDecodeError as e:
+        return ("error", str(e))
+    if not isinstance(obj, dict):
+        return ("error", "tool call is not a JSON object")
+
+    name = obj.get("name", "") or ""
+    args = obj.get("arguments", {})
+    if isinstance(args, str):
+        # Some models stringify the arguments object — recover it.
+        try:
+            args = json.loads(args)
+        except json.JSONDecodeError:
+            args = {}
+    if not isinstance(args, dict):
+        args = {}
+
+    command = args.get("command") or ""
+    if not isinstance(command, str):
+        command = str(command)
+    body = args.get("body") or ""
+    if not isinstance(body, str):
+        body = str(body)
+    return ("ok", name, command.strip(), body)
+
+
+def _normalize_tool_call_text(text: str) -> str:
+    """
+    Rebuild the assistant text as  [prose]\\n<tool_call>\\n{json}\\n</tool_call>
+    so the stored history/training turn is clean and complete — the live
+    </tool_call> was eaten by the stop sequence, and any prose preceding the
+    call may carry trailing whitespace.  Preserves the model's exact JSON text.
+    Falls back to the stripped original if the JSON can't be isolated.
+    """
+    idx = text.find(_TOOL_CALL_OPEN)
+    if idx == -1:
+        return text.rstrip()
+    prose = text[:idx].rstrip()
+    after = text[idx + len(_TOOL_CALL_OPEN):]
+    brace = after.find("{")
+    if brace == -1:
+        return text.rstrip()
+    try:
+        _obj, end = json.JSONDecoder().raw_decode(after[brace:])
+    except json.JSONDecodeError:
+        return text.rstrip()
+    json_str = after[brace:brace + end]
+    block = f"{_TOOL_CALL_OPEN}\n{json_str}\n</tool_call>"
+    return f"{prose}\n{block}" if prose else block
+
 
 def _trim_agent_text(turn: Turn, cmd_stripped: str) -> None:
     """

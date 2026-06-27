@@ -3,10 +3,14 @@
 Curate .train.jsonl files for fine-tuning quality.
 
 For each session_*.train.jsonl, produces a session_*.curated.jsonl with:
-  - Turns dropped: no commands and no Telegram context (unrecoverable causeless prose)
-  - Turns fixed:   narration prefix stripped before first command
-  - Turns fixed:   fake markdown-quoted commands (> /cmd) removed
+  - Turns dropped: no <tool_call> and no Telegram context (causeless prose)
+  - Turns fixed:   stray markdown-quoted fake commands (> /cmd) removed
+  - role:"tool" results are carried along with the assistant turn they follow
   - Sessions with fewer than 3 good turns after curation are dropped entirely
+
+Tool-call format note: the narration preceding a <tool_call> is INTENTIONAL
+(the model is prompted to say what it's about to do), so it is preserved —
+unlike the old codeblock format, we no longer strip pre-command prose.
 
 Originals are never modified.  Run with --apply to write output files;
 without it, only prints a report.
@@ -23,14 +27,9 @@ from pathlib import Path
 # Helpers
 # ---------------------------------------------------------------------------
 
-def is_command_line(line: str) -> bool:
-    s = line.strip()
-    return bool(s and (
-        s.startswith("/")
-        or s.startswith("$ ")
-        or s.startswith("# ")
-        or s == "<|eoc|>"
-    ))
+def has_tool_call(agent_text: str) -> bool:
+    """An assistant turn 'has a command' if it contains a <tool_call> block."""
+    return "<tool_call>" in agent_text
 
 
 def split_think(content: str) -> tuple[str, str]:
@@ -44,34 +43,20 @@ def split_think(content: str) -> tuple[str, str]:
 def fix_agent_text(agent: str) -> tuple[str, list[str]]:
     """
     Clean agent text (the non-think portion of an assistant turn).
-    Returns (cleaned, list_of_applied_fixes).
+
+    In the tool-call format the narration before a <tool_call> is intentional, so
+    we do NOT strip pre-command prose (that was an old-codeblock fix).  We only
+    drop stray markdown-quoted fake commands (> /cmd), a relic that occasionally
+    surfaces.  Returns (cleaned, list_of_applied_fixes).
     """
     fixes: list[str] = []
-    lines = agent.splitlines(keepends=True)
-
-    # Remove fake markdown-quoted commands: lines matching ^> /...
     cleaned: list[str] = []
-    for line in lines:
+    for line in agent.splitlines(keepends=True):
         if re.match(r"^\s*>\s*/", line):
             fixes.append(f"removed_fake_cmd: {line.strip()[:60]}")
         else:
             cleaned.append(line)
-    lines = cleaned
-
-    # Strip narration lines before the first command line
-    non_empty = [(i, l) for i, l in enumerate(lines) if l.strip()]
-    first_cmd_pos = next(
-        (i for i, l in non_empty if is_command_line(l)), None
-    )
-    if first_cmd_pos is not None and first_cmd_pos > 0:
-        # There are non-empty lines before the first command
-        narration_lines = [l for l in lines[:first_cmd_pos] if l.strip()]
-        if narration_lines:
-            preview = " | ".join(l.strip() for l in narration_lines)[:80]
-            fixes.append(f"stripped_narration: {preview}")
-        lines = lines[first_cmd_pos:]
-
-    return "".join(lines), fixes
+    return "".join(cleaned), fixes
 
 
 def curate_messages(messages: list[dict]) -> tuple[list[dict] | None, dict]:
@@ -87,10 +72,12 @@ def curate_messages(messages: list[dict]) -> tuple[list[dict] | None, dict]:
         "turns_kept_clean": 0,
     }
 
-    # Rebuild: keep system/initial-user as-is, process assistant+user pairs
+    # Rebuild: keep system/initial-user as-is, process assistant turns and the
+    # role:"tool" results that follow them.
     out: list[dict] = []
     system_done = False
     pending_users: list[dict] = []  # user messages accumulated before next assistant
+    last_kept = False               # was the most recent assistant turn kept?
 
     for msg in messages:
         role = msg["role"]
@@ -108,27 +95,29 @@ def curate_messages(messages: list[dict]) -> tuple[list[dict] | None, dict]:
             pending_users.append(msg)
             continue
 
+        if role == "tool":
+            # Command result — keep it only if its assistant turn was kept,
+            # otherwise it would dangle without the call that produced it.
+            if last_kept:
+                out.append(msg)
+            continue
+
         # --- assistant turn ---
-        assert role == "assistant"
+        assert role == "assistant", f"unexpected role {role!r}"
         stats["turns_seen"] += 1
         content = msg["content"]
         think_part, agent_part = split_think(content)
 
-        agent_stripped = agent_part.strip()
-        agent_lines = [l for l in agent_stripped.splitlines() if l.strip()]
-        has_commands = any(is_command_line(l) for l in agent_lines)
-
-        # Check if any of the pending user messages are Telegram messages
+        has_commands   = has_tool_call(agent_part)
         has_tg_context = any("@ Telegram]" in u["content"] for u in pending_users)
 
-        # Drop: no commands and no Telegram context
+        # Drop: no tool call and no Telegram context (causeless prose)
         if not has_commands and not has_tg_context:
             stats["turns_dropped_no_cmd"] += 1
-            # Keep pending_users — they belong to the next turn's context
-            # (don't flush them; just don't emit this assistant turn)
+            last_kept = False
+            # Keep pending_users — they belong to the next turn's context.
             continue
 
-        # Fix agent text
         fixed_agent, fixes = fix_agent_text(agent_part)
         if any(f.startswith("removed_fake_cmd") for f in fixes):
             stats["turns_fixed_fake_cmd"] += 1
@@ -137,13 +126,12 @@ def curate_messages(messages: list[dict]) -> tuple[list[dict] | None, dict]:
         if not fixes:
             stats["turns_kept_clean"] += 1
 
-        # Recombine think + fixed agent
         fixed_content = think_part + fixed_agent if think_part else fixed_agent
 
-        # Emit accumulated user messages then this assistant turn
         out.extend(pending_users)
         pending_users = []
         out.append({"role": "assistant", "content": fixed_content})
+        last_kept = True
 
     # Flush any trailing user messages
     out.extend(pending_users)

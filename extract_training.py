@@ -17,10 +17,21 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Sync with agent.py _BAD_OBS_PREFIXES
+# Sync with agent.py _BAD_OBS_PREFIXES (tool-call era).  A few legacy entries are
+# kept so this parser still cleanly filters pre-migration logs from the old
+# triple-backtick corpus.
 _BAD_OBS_PREFIXES = (
-    "[system] You generated a fake",
+    # current (tool-call format)
+    "[system] You wrote",
     "[system] Your /telegram message",
+    "[system] Your tool call",
+    "[system] Unknown tool ",
+    "[system] Response completed without",
+    "[system] Your response was cut off",
+    "[system] Loop guard:",
+    "[error] Unrecognised command:",
+    # legacy (old codeblock format) — keep for back-compat parsing
+    "[system] You generated a fake",
     "[system] Blank-line stall",
     "[system] You are generating blank",
     "[system] Commands use a leading slash",
@@ -28,12 +39,39 @@ _BAD_OBS_PREFIXES = (
     "[system] You wrote what a command response",
     "[system] You wrote a long response without",
     "[system] Response completed without issuing",
-    "[system] Your response was cut off by the token limit",
-    "[system] Loop guard:",
     "[system] The <|eoc|>",
-    "[error] Unrecognised command:",
-    "[error] Command cut off mid-token",  # legacy — pre-2026-05-03 wording
+    "[error] Command cut off mid-token",
 )
+
+
+_TOOL_CALL_OPEN = "<tool_call>"
+
+
+def _normalize_tool_call_text(text: str) -> str:
+    """
+    Rebuild assistant text as [prose]\\n<tool_call>\\n{json}\\n</tool_call>.
+
+    Logs capture the streamed tokens, but </tool_call> is a special token that
+    KCPP renders as empty in the content stream — so the reconstructed agent text
+    has the opening tag and JSON but no closing tag.  Re-attach it (the JSON is
+    self-delimiting).  Text without a <tool_call> (old codeblock logs) is returned
+    unchanged so this parser still handles the pre-migration corpus.
+    """
+    idx = text.find(_TOOL_CALL_OPEN)
+    if idx == -1:
+        return text.rstrip()
+    prose = text[:idx].rstrip()
+    after = text[idx + len(_TOOL_CALL_OPEN):]
+    brace = after.find("{")
+    if brace == -1:
+        return text.rstrip()
+    try:
+        _obj, end = json.JSONDecoder().raw_decode(after[brace:])
+    except json.JSONDecodeError:
+        return text.rstrip()
+    json_str = after[brace:brace + end]
+    block = f"{_TOOL_CALL_OPEN}\n{json_str}\n</tool_call>"
+    return f"{prose}\n{block}" if prose else block
 
 _LINE_RE     = re.compile(r"^\d{2}:\d{2}:\d{2}\.\d+ \[(\w+)\s*\] (.*)")
 _ABORT_RE    = re.compile(r"\[SYS\s*\] Abort sent \(genkey=[A-Z0-9]+\), (.+?)\s*$")
@@ -155,11 +193,13 @@ def _parse_log(path: Path) -> list[Turn]:
             current.agent += content + "\n"
 
         elif tag == "CMD":
-            # A command starts a new turn boundary — flush previous obs
+            # A command marks the start of a result block — flush previous obs.
+            # The command itself is NOT echoed into the result: it already lives
+            # in the assistant turn's <tool_call> block (reconstructed from AGENT
+            # lines), and the result is injected back as a bare role:"tool".
             _flush_obs()
-            # CMD line is recorded as the first obs line of the new obs block
             in_obs_block = True
-            obs_lines = [f"> {content}"]
+            obs_lines = []
 
         elif tag == "OBS":
             if not in_obs_block:
@@ -189,19 +229,23 @@ def _is_bad(turn: Turn) -> bool:
 def _build_messages(turns: list[Turn], system_prompt: str) -> list[dict]:
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user",   "content": "Begin. Read your task file first."},
+        {"role": "system", "content": "Begin. Read your task file first."},
     ]
     for turn in turns:
         if _is_bad(turn) or not (turn.agent.strip() or turn.think.strip()):
             continue
         think = _fix_third_person(turn.think.strip())
-        agent = turn.agent.strip()
+        # Re-attach the </tool_call> the stream drops, so the assistant turn is a
+        # complete native tool call (no-op for old codeblock logs).
+        agent = _normalize_tool_call_text(turn.agent)
         content = f"<think>\n{think}\n</think>\n{agent}" if think else agent
         if not content.strip():
             continue
         messages.append({"role": "assistant", "content": content})
+        # Command results inject back as role:"tool" (Qwen3 wraps them in
+        # <tool_response>); the dispatched command is in the assistant turn above.
         for obs in turn.observations:
-            messages.append({"role": "user", "content": obs})
+            messages.append({"role": "tool", "content": obs})
     return messages
 
 

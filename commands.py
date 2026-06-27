@@ -259,6 +259,34 @@ class CommandDispatcher:
                 # Model omitted the sentinel — fire it now.
                 return self._patch_input(END_PATCH)
             return self._begin_patch([])
+        if cmd in ("/appendlines", "/edit"):
+            # Single-shot: the whole multi-line payload arrives in *body*.  Begin
+            # the interactive session, then drive it line-by-line through the same
+            # handler the streaming loop used, so the protocol stays identical.
+            begin = self.dispatch(line)
+            if self.pending is None:
+                return begin  # begin failed (bad path / file not found)
+            if not body.strip():
+                self.pending = None
+                return f"[block] {cmd} needs its content in the body."
+            last = begin
+            for ln in body.rstrip("\n").splitlines():
+                last = self.handle_pending_input(ln)
+                if self.pending is None:
+                    break  # terminator reached ('done' / edit applied)
+            if self.pending is not None:
+                mode = self.pending.mode
+                if mode == "appendlines":
+                    # No 'done' in body — lines were still written; finalize.
+                    last = self.handle_pending_input("done")
+                else:  # edit_old / edit_new — incomplete, nothing applied
+                    self.pending = None
+                    last = (
+                        "[edit] Not applied — the body must contain the exact old "
+                        "text, a line with only ---, the new text, then a line with "
+                        "only done."
+                    )
+            return last
         # Fall back: dispatch the command line as-is, body ignored.
         result = self.dispatch(line)
         if result:
