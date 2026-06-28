@@ -67,14 +67,45 @@ def _cmem_header() -> str:
     return f"YOUR SCRATCHPAD:\n{lines}\n\n"
 
 def usr(c, with_cmem=False):
-    """Append a user/observation message, optionally prefixed with current cmem state."""
+    """Append a command result as a role:"tool" message (Qwen3 wraps it in <tool_response>).
+
+    The leading "> /cmd" echo line the fmt_* helpers prepend is stripped: in the
+    tool-call format the command lives in the assistant turn's <tool_call>, so the
+    result is injected bare.  with_cmem prefixes the current scratchpad state.
+    """
+    if c.startswith("> ") and "\n" in c:
+        c = c.split("\n", 1)[1]
     content = (_cmem_header() + c) if with_cmem else c
-    msgs.append({"role": "user", "content": content})
+    msgs.append({"role": "tool", "content": content})
+
+def _split_cmd_body(cmd_text):
+    """Split an old-style cmd_text blob into (command, body) for the run_command tool.
+
+      "$ shell ..."        -> ("$ shell ...", "")     shell stays inline
+      "/patch\\n<hunk>"     -> ("/patch", "<hunk>")    multiline payload -> body
+      "/telegram <multi>"  -> ("/telegram", "<multi>") when the message spans lines
+      everything else      -> (cmd_text, "")           single-line slash command
+    """
+    cmd_text = cmd_text.strip()
+    first, _, rest = cmd_text.partition("\n")
+    verb = first.split(None, 1)[0] if first.split() else ""
+    if verb == "/patch":
+        return "/patch", rest.strip("\n")
+    if verb == "/telegram" and rest:
+        return "/telegram", cmd_text[len("/telegram"):].strip()
+    return cmd_text, ""
 
 def ast(think, narrate, cmd_text):
-    think_part = f"<think>\n{think.strip()}\n</think>\n" if think else ""
+    """Append an assistant turn: optional <think>, narration, then a native <tool_call>."""
+    think_part = f"<think>\n{think.strip()}\n</think>\n" if think.strip() else ""
+    command, body = _split_cmd_body(cmd_text)
+    arguments = {"command": command}
+    if body:
+        arguments["body"] = body
+    call = json.dumps({"name": "run_command", "arguments": arguments}, ensure_ascii=False)
+    narrate_part = f"{narrate.strip()}\n" if narrate.strip() else ""
     msgs.append({"role": "assistant", "content":
-        f"{think_part}{narrate.strip()}\n```\n{cmd_text.strip()}\n```\n<|eoc|>"})
+        f"{think_part}{narrate_part}<tool_call>\n{call}\n</tool_call>"})
 
 def cmem_write(line: int, text: str) -> str:
     """Simulate /cmem w <line> <text> and return the observation."""
@@ -379,7 +410,7 @@ PARSER_RS_BUGGY = PARSER_RS.replace("#[derive(Default)]\n", "")
 def _session_start(task_text):
     """Shared turns 1-4: read task, pmem r, cargo new. Returns (sa, smoke_log)."""
     sys_msg(SYSTEM_PROMPT)
-    usr("Begin. Read your task file first.")
+    sys_msg("Begin. Read your task file first.")
 
     ast(
         think="I need to read task.md to understand what I'm supposed to build.\n",
@@ -742,7 +773,7 @@ cmem line 1: current step. Line 2: slow-state facts I'll need in every patch.
 
     # ── SIMULATED COMPACTION ───────────────────────────────────────────────────
     # Inject a compacted summary — agent must use cmem to recover state
-    usr(fmt_compacted())
+    sys_msg(fmt_compacted())
 
     ast(
         think="""\
@@ -967,7 +998,7 @@ Checkpointing now in three cmem lines, then I'll keep going.
     usr(cmem_write(3, "NEXT: stats.rs -> full main.rs -> cargo run logs -> report -> pmem -> telegram"))
 
     # ── COMPACTION FIRES ──────────────────────────────────────────────────────
-    usr(fmt_compacted())
+    sys_msg(fmt_compacted())
 
     # Recovery — cmem makes this trivial
     ast(
