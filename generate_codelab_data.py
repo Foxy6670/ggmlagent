@@ -1249,6 +1249,253 @@ def build_session_brief_think(task_text, sa, smoke_log):
     usr(fmt_telegram(tg_msg))
 
 
+# ── Variant: project-create (self-directed lifecycle: scope → init → build+fix → finalize) ──
+
+PROJECT_MD = dedent("""\
+    # wordstat
+
+    A tiny command-line tool that reads a text file and reports basic
+    statistics about it.
+
+    ## Scope
+    - Input: one path to a UTF-8 text file.
+    - Output: line count, word count, unique-word count, and the three most
+      frequent words.
+    - Words are compared case-insensitively with surrounding punctuation
+      stripped, so "Fox," and "fox" count as the same word.
+
+    ## Done when
+    - `cargo build` is clean.
+    - Running it against a small sample file produces sensible counts.
+
+    ## Non-goals
+    No flags, no streaming, no Unicode segmentation beyond what the standard
+    library gives for free. Keep it to one file.
+""")
+
+# First pass: splits on ' ' only, so words separated by a newline or tab get
+# glued together. Compiles fine — the bug only shows up at runtime.
+WORDSTAT_MAIN_BUGGY = dedent("""\
+    use std::collections::HashMap;
+    use std::env;
+    use std::fs;
+
+    fn main() {
+        let args: Vec<String> = env::args().collect();
+        if args.len() < 2 {
+            eprintln!("usage: wordstat <file>");
+            std::process::exit(1);
+        }
+
+        let text = match fs::read_to_string(&args[1]) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("error: cannot read {}: {}", args[1], e);
+                std::process::exit(1);
+            }
+        };
+
+        let line_count = text.lines().count();
+
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut word_count = 0usize;
+        for raw in text.split(' ') {
+            let word: String = raw
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+                .to_lowercase();
+            if word.is_empty() {
+                continue;
+            }
+            word_count += 1;
+            *counts.entry(word).or_insert(0) += 1;
+        }
+
+        let mut ranked: Vec<(&String, &usize)> = counts.iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+
+        println!("lines:  {}", line_count);
+        println!("words:  {}", word_count);
+        println!("unique: {}", counts.len());
+        println!("top:");
+        for (word, n) in ranked.iter().take(3) {
+            println!("  {:>3}  {}", n, word);
+        }
+    }
+""")
+
+# The one-line fix: split on all whitespace, not just spaces.
+WORDSTAT_MAIN_FIXED = WORDSTAT_MAIN_BUGGY.replace(
+    "for raw in text.split(' ') {",
+    "for raw in text.split_whitespace() {",
+)
+
+WORDSTAT_SAMPLE = "the quick brown fox\njumps over the lazy dog\nthe fox runs\n"
+
+
+def build_session_project_create():
+    """Self-directed project lifecycle: define scope, initialize, write+smoke+oops-fix, finalize."""
+    sys_msg(SYSTEM_PROMPT)
+    sys_msg("Begin. You have no pending task right now — use the idle time to build "
+            "something small and genuinely useful, then write up what you built.")
+
+    sa = WS / "wordstat"
+
+    # ── 1. Define the project and its scope ──────────────────────────────────
+    ast(
+        think="""\
+No assigned task, so this is mine to choose. I want something small, finishable
+in one sitting, and actually useful to me later — I read a lot of text files.
+A quick word-frequency tool fits: line/word/unique counts plus the top few
+words. I'll scope it in project.md first so the goal is fixed before I start
+writing code.
+""",
+        narrate="I'll build a small word-stats CLI. Writing the scope to project.md first.",
+        cmd_text=patch_add("project.md", PROJECT_MD),
+    )
+    write_ws("project.md", PROJECT_MD)
+    usr(fmt_patch())
+
+    # ── 2. Initialize the project ────────────────────────────────────────────
+    init_cmd = "cargo new wordstat && cd wordstat && ls src/"
+    init_out = run("cargo new wordstat && ls wordstat/src/")
+    ast(
+        think="Scope is set. Initialize the Rust project and confirm the scaffold.\n",
+        narrate="Initializing the cargo project.",
+        cmd_text=f"$ {init_cmd}",
+    )
+    usr(fmt_shell(init_cmd, init_out))
+
+    # ── 3. Write and test ────────────────────────────────────────────────────
+    write_ws("wordstat/src/main.rs", WORDSTAT_MAIN_BUGGY)
+    ast(
+        think="""\
+Now the implementation. Read the file, count lines with .lines(), then walk the
+tokens building a frequency map, strip punctuation off each token, and print the
+totals plus the top three. Patch path is relative to codelab/, so
+wordstat/src/main.rs.
+""",
+        narrate="Writing the implementation into src/main.rs.",
+        cmd_text=patch_update(
+            "wordstat/src/main.rs", "fn main()",
+            ["fn main() {", '    println!("Hello, world!");', "}"],
+            WORDSTAT_MAIN_BUGGY.splitlines(),
+        ),
+    )
+    usr(fmt_patch())
+
+    write_ws("wordstat/sample.txt", WORDSTAT_SAMPLE)
+    ast(
+        think="I need a small input to test against. A few short lines with a repeated "
+              "word so I can eyeball whether the counts are right.\n",
+        narrate="Adding a small sample.txt to test against.",
+        cmd_text=patch_add("wordstat/sample.txt", WORDSTAT_SAMPLE),
+    )
+    usr(fmt_patch())
+
+    build_out = run("cargo build 2>&1", cwd=sa)
+    ast(
+        think="Build before running so I'm reacting to compile errors and logic "
+              "errors separately.\n",
+        narrate="Building.",
+        cmd_text="$ cargo build",
+    )
+    usr(fmt_shell("cargo build", build_out))
+
+    smoke_out = run("cargo run -- sample.txt 2>&1", cwd=sa)
+    ast(
+        think="Build is clean. Smoke test against sample.txt to see real numbers.\n",
+        narrate="Running it against sample.txt.",
+        cmd_text="$ cargo run -- sample.txt",
+    )
+    usr(fmt_shell("cargo run -- sample.txt", smoke_out))
+
+    # ── oops: the counts are off ─────────────────────────────────────────────
+    ast(
+        think="""\
+Something's wrong. sample.txt plainly has twelve words but it reports ten, and
+the top list shows "dogthe" — that's "dog" and "the" glued across a line break.
+I'm splitting on ' ' only, so a newline between two words never separates them;
+then stripping punctuation fuses the leftovers into one fake word. Let me re-read
+the loop to confirm before I change anything.
+""",
+        narrate="Counts look off — a merged word in the output. Re-reading the tokenizer.",
+        cmd_text="/read wordstat/src/main.rs",
+    )
+    usr(fmt_read("wordstat/src/main.rs", WORDSTAT_MAIN_BUGGY, page=1))
+
+    write_ws("wordstat/src/main.rs", WORDSTAT_MAIN_FIXED)
+    ast(
+        think="""\
+Confirmed: `text.split(' ')`. That only breaks on the space character, never on
+\\n or \\t. split_whitespace() splits on any run of whitespace and skips empties,
+which is exactly what I want. One-line change.
+""",
+        narrate="Found it — splitting on ' ' instead of all whitespace. Patching the fix.",
+        cmd_text=patch_update(
+            "wordstat/src/main.rs", "let mut word_count",
+            ["    for raw in text.split(' ') {"],
+            ["    for raw in text.split_whitespace() {"],
+        ),
+    )
+    usr(fmt_patch())
+
+    fixed_combined, fixed_stdout = run_split("cargo run -- sample.txt", cwd=sa)
+    ast(
+        think="Rerun to confirm the fix — twelve words now, and no glued tokens in the "
+              "top list.\n",
+        narrate="Re-running the smoke test.",
+        cmd_text="$ cargo run -- sample.txt",
+    )
+    usr(fmt_shell("cargo run -- sample.txt", fixed_combined))
+
+    # ── 4. Finalize ──────────────────────────────────────────────────────────
+    loc = len(WORDSTAT_MAIN_FIXED.splitlines())
+    complete_body = (
+        "wordstat — done.\n\n"
+        "What: a small Rust CLI that reports line/word/unique counts and the\n"
+        "top three words in a text file.\n\n"
+        f"Source: src/main.rs ({loc} lines), scoped in project.md.\n"
+        "Build: cargo build — clean.\n\n"
+        "Final smoke test (cargo run -- sample.txt):\n"
+        f"{fixed_stdout}\n\n"
+        "Note: first pass split on ' ' only, which glued words across line breaks\n"
+        "and undercounted; switched to split_whitespace()."
+    )
+    ast(
+        think="""\
+It works and matches the scope in project.md: clean build, sensible counts. I'll
+drop a project.complete next to the source recording what it does and the final
+numbers, so the finished state is self-describing.
+""",
+        narrate="Project's done. Writing project.complete with a short summary and the final stats.",
+        cmd_text=patch_add("wordstat/project.complete", complete_body + "\n"),
+    )
+    write_ws("wordstat/project.complete", complete_body + "\n")
+    usr(fmt_patch())
+
+    pmem_text = "built wordstat — small Rust word-frequency CLI; scope in project.md, marked done in project.complete"
+    ast(
+        think="Saving a one-line note to persistent memory so I remember this tool exists.\n",
+        narrate="Noting the finished tool in persistent memory.",
+        cmd_text=f"/pmem w {pmem_text}",
+    )
+    usr(fmt_pmem_w())
+
+    tg_msg = (
+        "Built a little tool in some idle time: wordstat, a Rust CLI for "
+        "line/word/unique counts and the top words in a text file. "
+        f"Smoke test on a sample:\n\n{fixed_stdout}"
+    )
+    ast(
+        think="Memory saved. Letting Foxo know what I built.\n",
+        narrate="Telling Foxo what I built.",
+        cmd_text=f"/telegram {tg_msg}",
+    )
+    usr(fmt_telegram(tg_msg))
+
+
 # ── Top-level session runner ──────────────────────────────────────────────────
 
 def build_session(variant="clean"):
@@ -1259,6 +1506,11 @@ def build_session(variant="clean"):
     (WS / "logs").symlink_to(LOGS_DIR)
 
     try:
+        if variant == "project-create":
+            # Self-directed: no task file, the agent defines its own project.
+            build_session_project_create()
+            return
+
         task_text = TASK_FILE.read_text()
         sa, smoke_log = _session_start(task_text)
 
@@ -1291,7 +1543,8 @@ def main():
                     help="model tag to embed in the record")
     ap.add_argument("--variant", default="clean",
                     choices=["clean", "build-error", "cmem-tracking", "patch-path-error",
-                             "pre-compaction", "cmem-misuse", "brief-think"],
+                             "pre-compaction", "cmem-misuse", "brief-think",
+                             "project-create"],
                     help="session variant (default: clean)")
     args = ap.parse_args()
 
