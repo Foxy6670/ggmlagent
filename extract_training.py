@@ -140,16 +140,28 @@ def _dissoc_patterns(name: str):
     return _DISSOC_RE_CACHE[name]
 
 
+# A single "the user" is rewritten to "I" by _fix_third_person; this many or more
+# means the whole block is framed as narrating someone else ("the user is trying
+# to... they tried...") — the dominant live drift form, which rewriting only
+# mangles ("I is trying..."), so dense blocks are dropped instead.
+_USER_DENSITY = 2
+
+
 def _dissociation_signals(think: str, name: str) -> list[str]:
     """Markers that the agent is narrating itself in the third person.
 
     These are self-references _fix_third_person can't safely repair — the agent
-    talking about itself by name as an external subject, or casting itself as
-    'the user'.  Such turns teach spectator framing, so they're dropped rather
-    than cosmetically rewritten.  Identity-affirming uses ("I am Boonie", "my
-    task as Boonie") are deliberately NOT flagged.
+    talking about itself by name as an external subject, casting itself as 'the
+    user', or narrating the whole block in dense third-person 'the user' framing.
+    Such turns teach spectator framing, so they're dropped rather than
+    cosmetically rewritten.  Identity-affirming uses ("I am Boonie", "my task as
+    Boonie") and a single clean "the user" (left to _fix_third_person) are NOT
+    flagged.
     """
-    return [label for label, pat in _dissoc_patterns(name) if pat.search(think)]
+    hits = [label for label, pat in _dissoc_patterns(name) if pat.search(think)]
+    if len(_SELF_REF_RE.findall(think)) >= _USER_DENSITY:
+        hits.append("user-density")
+    return hits
 
 
 def _is_dissociated(think: str, name: str) -> bool:
