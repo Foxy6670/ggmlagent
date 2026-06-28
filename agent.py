@@ -380,7 +380,7 @@ class Agent:
         parsed = _parse_tool_call(turn.agent_text)
 
         if parsed and parsed[0] == "ok":
-            _, name, command, body = parsed
+            _, name, command, body, root = parsed
             turn.agent_text = _normalize_tool_call_text(turn.agent_text)
 
             if name and name != "run_command":
@@ -398,12 +398,13 @@ class Agent:
                 self._record_obs(turn, "", obs, command=False)
                 return
 
+            eff = _effective_command(command, root)
             if body.strip():
-                self._log.command(f"[block] {command}")
-                result = self._dispatch.dispatch_block(command, body)
+                self._log.command(f"[block] {eff}")
+                result = self._dispatch.dispatch_block(eff, body)
             else:
-                self._log.command(command)
-                result = self._run_command(command)
+                self._log.command(eff)
+                result = self._run_command(eff)
             if command.lower().startswith("/telegram"):
                 self._pending_tg.clear()
             self._record_obs(turn, command, result, command=True)
@@ -449,6 +450,22 @@ class Agent:
     # Command dispatch with timeout and background-job support
     # ------------------------------------------------------------------
 
+    def _dispatch_or_note(self, c: str) -> str:
+        """Dispatch *c*, never returning empty.
+
+        dispatch() returns None for a line that is neither a slash command nor
+        $/#-prefixed shell.  _effective_command should prevent that from ever
+        reaching here, but if it does, surface an explicit note instead of an
+        empty observation (the silent swallow that wedged Boonie in a loop).
+        """
+        result = self._dispatch.dispatch(c)
+        if result is None:
+            return (
+                f"[system] {c[:60]!r} isn't a recognized command. Shell commands "
+                "take a \"root\" argument (true/false); slash commands start with '/'."
+            )
+        return result
+
     def _run_command(self, cmd: str) -> str:
         """
         Dispatch *cmd* and return its result string.
@@ -486,14 +503,14 @@ class Agent:
             inner = cmd[3:].strip()
             if not inner or not is_command_line(inner, self._frwx):
                 return "[bg] Usage: /bg <command>  — e.g. /bg /goto http://example.com"
-            job = self._job_mgr.start(inner, lambda c=inner: self._dispatch.dispatch(c) or "")
+            job = self._job_mgr.start(inner, lambda c=inner: self._dispatch_or_note(c))
             return (
                 f"[bg] Job #{job.id} started: {inner[:70]}\n"
                 f"Use /fg {job.id} to collect the result, or /jobs to list all jobs."
             )
 
         # Regular command — run in thread so a hang never blocks the loop.
-        job = self._job_mgr.start(cmd, lambda c=cmd: self._dispatch.dispatch(c) or "")
+        job = self._job_mgr.start(cmd, lambda c=cmd: self._dispatch_or_note(c))
         result = job.wait(CMD_TIMEOUT)
         if result is None:
             return (
@@ -1082,7 +1099,8 @@ def _parse_tool_call(text: str):
     Extract the tool call from a completed generation.
 
     Returns:
-      ("ok", name, command, body)  — parsed successfully (command/body may be "")
+      ("ok", name, command, body, root) — parsed OK (command/body may be "";
+                                          root is True/False/None)
       ("error", reason)            — <tool_call> opened but the JSON is unparseable
       None                         — no <tool_call> marker present at all
 
@@ -1121,7 +1139,50 @@ def _parse_tool_call(text: str):
     body = args.get("body") or ""
     if not isinstance(body, str):
         body = str(body)
-    return ("ok", name, command.strip(), body)
+    root = _coerce_root(args.get("root"))
+    return ("ok", name, command.strip(), body, root)
+
+
+def _coerce_root(val):
+    """Normalize the optional "root" argument to True / False / None.
+
+    None means the model didn't ask for shell explicitly — routing falls back
+    to the command-string rules (slash vs $/# prefix vs forgiving default).
+    Booleans pass through; common stringified forms are recovered.
+    """
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        v = val.strip().lower()
+        if v in ("true", "1", "yes", "root"):
+            return True
+        if v in ("false", "0", "no", "user"):
+            return False
+    return None
+
+
+def _effective_command(command: str, root) -> str:
+    """Map a tool-call (command, root) pair to a line dispatch() understands.
+
+    - root is True/False  → shell, '# '/'$ ' prefix (the model can drop the
+                            marker entirely and just set root).
+    - command starts '/'  → slash command, unchanged.
+    - command starts $/#  → already-prefixed shell, unchanged (back-compat).
+    - anything else       → forgiving default: treat as a shell command as the
+                            unprivileged user, so a bare command never vanishes
+                            into an empty observation.
+    """
+    stripped = command.strip()
+    if root is not None:
+        bare = stripped
+        if bare[:2] in ("$ ", "# "):
+            bare = bare[2:].strip()
+        return ("# " if root else "$ ") + bare
+    if stripped.startswith("/"):
+        return stripped
+    if stripped.startswith("$ ") or (stripped.startswith("# ") and not stripped.startswith("##")):
+        return stripped
+    return "$ " + stripped
 
 
 def _normalize_tool_call_text(text: str) -> str:

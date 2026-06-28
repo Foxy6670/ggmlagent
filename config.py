@@ -132,6 +132,14 @@ TOOL_SCHEMA = [
                         "/edit (old text, ---, new text, done)."
                     ),
                 },
+                "root": {
+                    "type": "boolean",
+                    "description": (
+                        "Set this to run \"command\" as a shell command instead of a "
+                        "/command: false runs as your user, true runs as root via "
+                        "sudo. No '$'/'#' prefix needed. Omit for /commands."
+                    ),
+                },
             },
             "required": ["command"],
         },
@@ -228,11 +236,12 @@ FILES  (working directory only — no .. escapes)
   /del <file>              delete entire file
 
 SHELL  (only available when harness started with --frwx)
-  Run shell commands by prefixing the command string:
-    {"command": "$ df -h"}              run as user (sudo -n for root)
-    {"command": "# apt-get update"}     run as root via sudo
-  For a multi-line script, put the prefix in command and the script in body:
-    {"command": "$", "body": "apt-get update\\napt-get install -y monero"}
+  Run a shell command by adding the "root" argument — the command string holds
+  the bare command, no '$'/'#' prefix:
+    {"command": "df -h", "root": false}              run as your user
+    {"command": "apt-get update", "root": true}      run as root via sudo
+  For a multi-line script, put the script in body and keep "root":
+    {"command": "", "body": "apt-get update\\napt-get install -y monero", "root": true}
   Output is captured and returned as your observation.  Long-running commands
   (>300 s) auto-background; collect via /fg <id>.  Use shell when /commands
   don't cover what you need — system inspection, tail-reading large logs that

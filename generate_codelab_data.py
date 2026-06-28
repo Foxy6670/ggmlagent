@@ -79,29 +79,35 @@ def usr(c, with_cmem=False):
     msgs.append({"role": "tool", "content": content})
 
 def _split_cmd_body(cmd_text):
-    """Split an old-style cmd_text blob into (command, body) for the run_command tool.
+    """Split an old-style cmd_text blob into (command, body, root) for run_command.
 
-      "$ shell ..."        -> ("$ shell ...", "")     shell stays inline
-      "/patch\\n<hunk>"     -> ("/patch", "<hunk>")    multiline payload -> body
-      "/telegram <multi>"  -> ("/telegram", "<multi>") when the message spans lines
-      everything else      -> (cmd_text, "")           single-line slash command
+      "$ shell ..."        -> ("shell ...", "", False)  shell -> bare cmd + root flag
+      "# shell ..."        -> ("shell ...", "", True)   root shell
+      "/patch\\n<hunk>"     -> ("/patch", "<hunk>", None) multiline payload -> body
+      "/telegram <multi>"  -> ("/telegram", "<multi>", None) message spans lines
+      everything else      -> (cmd_text, "", None)      single-line slash command
     """
     cmd_text = cmd_text.strip()
+    if cmd_text.startswith("$ ") or (cmd_text.startswith("# ") and not cmd_text.startswith("##")):
+        # Shell: drop the prefix, signal privilege with the "root" argument.
+        return cmd_text[2:].strip(), "", cmd_text.startswith("# ")
     first, _, rest = cmd_text.partition("\n")
     verb = first.split(None, 1)[0] if first.split() else ""
     if verb == "/patch":
-        return "/patch", rest.strip("\n")
+        return "/patch", rest.strip("\n"), None
     if verb == "/telegram" and rest:
-        return "/telegram", cmd_text[len("/telegram"):].strip()
-    return cmd_text, ""
+        return "/telegram", cmd_text[len("/telegram"):].strip(), None
+    return cmd_text, "", None
 
 def ast(think, narrate, cmd_text):
     """Append an assistant turn: optional <think>, narration, then a native <tool_call>."""
     think_part = f"<think>\n{think.strip()}\n</think>\n" if think.strip() else ""
-    command, body = _split_cmd_body(cmd_text)
+    command, body, root = _split_cmd_body(cmd_text)
     arguments = {"command": command}
     if body:
         arguments["body"] = body
+    if root is not None:
+        arguments["root"] = root
     call = json.dumps({"name": "run_command", "arguments": arguments}, ensure_ascii=False)
     narrate_part = f"{narrate.strip()}\n" if narrate.strip() else ""
     msgs.append({"role": "assistant", "content":
