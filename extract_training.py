@@ -341,6 +341,12 @@ def main():
         help="agent's own name, used to drop turns that narrate it in the third "
              "person ('Boonie is...', 'the user, Boonie') (default: Boonie)",
     )
+    parser.add_argument(
+        "--dropped-out", default=None,
+        help="quarantine file: write every dissociation-dropped turn here (with "
+             "session + which signal fired) instead of discarding it, so useful "
+             "content in the dropped ~5%% can be repaired and reincorporated later",
+    )
     args = parser.parse_args()
 
     if args.system:
@@ -351,6 +357,7 @@ def main():
         system_prompt = SYSTEM_PROMPT
 
     out = open(args.out, "w", encoding="utf-8") if args.out != "-" else sys.stdout
+    dropped_out = open(args.dropped_out, "w", encoding="utf-8") if args.dropped_out else None
 
     total_sessions = 0
     total_turns = 0
@@ -383,6 +390,16 @@ def main():
             print(f"  skip {p.name} ({len(good)} good turns)", file=sys.stderr)
             continue
         model = args.model_tag or _extract_model(p)
+        if dropped_out:
+            for t in dissoc:
+                dropped_out.write(json.dumps({
+                    "session": p.name,
+                    "model": model,
+                    "signals": _dissociation_signals(t.think, args.agent_name),
+                    "think": t.think,
+                    "agent": t.agent,
+                    "observations": t.observations,
+                }, ensure_ascii=False) + "\n")
         messages = _build_messages(turns, system_prompt, args.agent_name)
         out.write(json.dumps({"model": model, "messages": messages}, ensure_ascii=False) + "\n")
         total_sessions += 1
@@ -394,9 +411,13 @@ def main():
 
     if args.out != "-":
         out.close()
+    if dropped_out:
+        dropped_out.close()
     dissoc_total_str = f" ({total_dissoc} dissociated turns dropped)" if total_dissoc else ""
     print(f"\nTotal: {total_sessions} sessions, {total_turns} turns{dissoc_total_str} → {args.out}",
           file=sys.stderr)
+    if args.dropped_out and total_dissoc:
+        print(f"Quarantined {total_dissoc} dropped turns → {args.dropped_out}", file=sys.stderr)
 
 
 if __name__ == "__main__":
