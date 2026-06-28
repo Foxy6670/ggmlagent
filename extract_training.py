@@ -110,6 +110,25 @@ def _fix_third_person(text: str) -> str:
     return text
 
 
+# The base model's own first-person identity assertion — "As an AI[ language
+# model], I/my" — is the one place it already self-references in the first person,
+# so it's a natural site to bind the agent's name.  Only the clause-initial form
+# (start of block or right after sentence punctuation) is rewritten, where adding
+# the name as apposition reads naturally; object-position "as an AI" is left alone.
+# The "language model" boilerplate is dropped — it drags the chatbot/refusal
+# persona along, the opposite of the autonomous self we want to reinforce.
+_AI_BIND_RE = re.compile(
+    r'(?P<lead>(?:^|(?<=[.!?]))\s*)As an AI(?: language model)?,?\s+(?P<pron>I|my)\b',
+    re.MULTILINE,
+)
+
+
+def _bind_identity(text: str, name: str) -> str:
+    """Bind *name* into the 'As an AI, I ...' identity assertion → 'As <name>, an AI, I ...'."""
+    return _AI_BIND_RE.sub(
+        lambda m: f"{m.group('lead')}As {name}, an AI, {m.group('pron')}", text)
+
+
 # Third-person verbs that, immediately after the agent's own name, mark it being
 # treated as an external subject ("Boonie is running ...", "Boonie tried ...").
 _DISSOC_VERBS = (
@@ -295,6 +314,7 @@ def _build_messages(turns: list[Turn], system_prompt: str, agent_name: str = "Bo
         if _is_dissociated(turn.think, agent_name):
             continue
         think = _fix_third_person(turn.think.strip())
+        think = _bind_identity(think, agent_name)
         # Re-attach the </tool_call> the stream drops, so the assistant turn is a
         # complete native tool call (no-op for old codeblock logs).
         agent = _normalize_tool_call_text(turn.agent)
