@@ -110,6 +110,52 @@ def _fix_third_person(text: str) -> str:
     return text
 
 
+# Third-person verbs that, immediately after the agent's own name, mark it being
+# treated as an external subject ("Boonie is running ...", "Boonie tried ...").
+_DISSOC_VERBS = (
+    r"is|was|are|were|has|had|does|did|will|won't|would|can|can't|could|should|"
+    r"must|needs?|wants?|tried|tries|keeps?|seems?|appears?|ran|runs?|began|"
+    r"started|stopped|attempted|noticed|realized|realised|decided|wrote|made|"
+    r"set|gets?|got|said|thinks?|thought"
+)
+
+_DISSOC_RE_CACHE: dict[str, list] = {}
+
+
+def _dissoc_patterns(name: str):
+    """Build (and cache) the dissociation regexes for an agent *name*."""
+    if name not in _DISSOC_RE_CACHE:
+        n = re.escape(name)
+        _DISSOC_RE_CACHE[name] = [
+            # 1. Own name as the subject of a third-person verb.  First-person and
+            #    appositive uses ("I am Boonie", "as Boonie", "named Boonie") don't
+            #    put a finite verb right after the name, so they don't match.
+            ("name-as-subject",
+             re.compile(r"\b" + n + r"\s+(?:" + _DISSOC_VERBS + r")\b", re.IGNORECASE)),
+            # 2. Explicit self-as-user apposition: "the user, Boonie" / "Boonie, the user".
+            ("user-apposition",
+             re.compile(r"\bthe user,?\s+" + n + r"\b|\b" + n + r",?\s+the user\b",
+                        re.IGNORECASE)),
+        ]
+    return _DISSOC_RE_CACHE[name]
+
+
+def _dissociation_signals(think: str, name: str) -> list[str]:
+    """Markers that the agent is narrating itself in the third person.
+
+    These are self-references _fix_third_person can't safely repair — the agent
+    talking about itself by name as an external subject, or casting itself as
+    'the user'.  Such turns teach spectator framing, so they're dropped rather
+    than cosmetically rewritten.  Identity-affirming uses ("I am Boonie", "my
+    task as Boonie") are deliberately NOT flagged.
+    """
+    return [label for label, pat in _dissoc_patterns(name) if pat.search(think)]
+
+
+def _is_dissociated(think: str, name: str) -> bool:
+    return bool(_dissociation_signals(think, name))
+
+
 def _session_health(path: Path) -> tuple[int, int]:
     """Return (executing_aborts, total_aborts) for a session log.
 
@@ -226,13 +272,15 @@ def _is_bad(turn: Turn) -> bool:
     return False
 
 
-def _build_messages(turns: list[Turn], system_prompt: str) -> list[dict]:
+def _build_messages(turns: list[Turn], system_prompt: str, agent_name: str = "Boonie") -> list[dict]:
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "system", "content": "Begin. Read your task file first."},
     ]
     for turn in turns:
         if _is_bad(turn) or not (turn.agent.strip() or turn.think.strip()):
+            continue
+        if _is_dissociated(turn.think, agent_name):
             continue
         think = _fix_third_person(turn.think.strip())
         # Re-attach the </tool_call> the stream drops, so the assistant turn is a
@@ -276,6 +324,11 @@ def main():
         "--model-tag", default=None,
         help="override model name in output (default: auto-detect from log SSE lines)",
     )
+    parser.add_argument(
+        "--agent-name", default="Boonie",
+        help="agent's own name, used to drop turns that narrate it in the third "
+             "person ('Boonie is...', 'the user, Boonie') (default: Boonie)",
+    )
     args = parser.parse_args()
 
     if args.system:
@@ -289,6 +342,7 @@ def main():
 
     total_sessions = 0
     total_turns = 0
+    total_dissoc = 0
     for log_path in sorted(args.logs):
         p = Path(log_path)
         if not p.exists() or p.suffix != ".log":
@@ -310,21 +364,27 @@ def main():
                 continue
 
         turns = _parse_log(p)
-        good = [t for t in turns if not _is_bad(t) and (t.agent.strip() or t.think.strip())]
+        present = [t for t in turns if not _is_bad(t) and (t.agent.strip() or t.think.strip())]
+        dissoc = [t for t in present if _is_dissociated(t.think, args.agent_name)]
+        good = [t for t in present if t not in dissoc]
         if len(good) < args.min_turns:
             print(f"  skip {p.name} ({len(good)} good turns)", file=sys.stderr)
             continue
         model = args.model_tag or _extract_model(p)
-        messages = _build_messages(turns, system_prompt)
+        messages = _build_messages(turns, system_prompt, args.agent_name)
         out.write(json.dumps({"model": model, "messages": messages}, ensure_ascii=False) + "\n")
         total_sessions += 1
         total_turns += len(good)
+        total_dissoc += len(dissoc)
         ratio_str = f", exec {exec_n}/{total_aborts}" if total_aborts else ""
-        print(f"  {p.name} [{model}]: {len(good)} good turns{ratio_str}", file=sys.stderr)
+        dissoc_str = f", {len(dissoc)} dissociated dropped" if dissoc else ""
+        print(f"  {p.name} [{model}]: {len(good)} good turns{ratio_str}{dissoc_str}", file=sys.stderr)
 
     if args.out != "-":
         out.close()
-    print(f"\nTotal: {total_sessions} sessions, {total_turns} turns → {args.out}", file=sys.stderr)
+    dissoc_total_str = f" ({total_dissoc} dissociated turns dropped)" if total_dissoc else ""
+    print(f"\nTotal: {total_sessions} sessions, {total_turns} turns{dissoc_total_str} → {args.out}",
+          file=sys.stderr)
 
 
 if __name__ == "__main__":
