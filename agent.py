@@ -67,6 +67,15 @@ _FG_WAIT         = 60.0  # seconds /fg blocks before returning "still running"
 # stale plan reinforced hard loops (see the Telegram re-injection fix). 0 = off.
 _THINK_CARRYOVER_CHARS = 0
 
+# EXPERIMENT (2026-06-29): the harness fires several full-prompt POSTs to
+# /api/extra/tokenize per turn (in _token_count, via _build_and_trim_messages),
+# interleaved right before each generation. Suspected of resetting KCPP's KV
+# cache slot → full reprocess every turn (Processed ≈ CtxLimit), while a plain
+# Lite chat (which never tokenizes) keeps ~100% cache hit. When False, skip the
+# live tokenize and use the local char estimate instead. Flip back to True if
+# the cache miss is unrelated.
+_USE_LIVE_TOKENIZE = False
+
 
 @dataclass
 class Turn:
@@ -895,9 +904,15 @@ class Agent:
         the model's think block exhausts them before it can issue a command.
         """
         combined = " ".join(m["content"] for m in msgs)
-        try:
-            content_tokens = self._client.tokenize(combined)
-        except Exception:
+        if _USE_LIVE_TOKENIZE:
+            try:
+                content_tokens = self._client.tokenize(combined)
+            except Exception:
+                content_tokens = int(len(combined) / _CHARS_PER_TOKEN)
+        else:
+            # Local estimate — avoids the mid-loop tokenize round-trip that may
+            # be evicting KCPP's KV cache. Slightly less precise; trimmer has
+            # headroom to absorb the error.
             content_tokens = int(len(combined) / _CHARS_PER_TOKEN)
         # ~5 tokens per message for ChatML role wrappers + ~10 BOS/EOS specials.
         template_overhead = len(msgs) * 5 + 10
