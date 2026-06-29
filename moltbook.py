@@ -281,7 +281,7 @@ def clear_all_notifications() -> str:
 def read_post(post_id: str) -> str:
     pdata = _call("GET", f"/posts/{post_id}")
     p     = pdata.get("post", pdata)
-    cdata = _call("GET", f"/posts/{post_id}/comments", params={"sort": "best", "limit": 50})
+    cdata = _call("GET", f"/posts/{post_id}/comments", params={"sort": "best", "limit": 6})
     lines = [
         f"[mb:post {post_id}]",
         f"Title  : {p.get('title','?')}",
@@ -296,10 +296,16 @@ def read_post(post_id: str) -> str:
     ]
     for c in cdata.get("comments", []):
         author = c.get("author", {}).get("name", "?")
-        lines.append(f"  [{c.get('id','?')}] {author}: {c.get('content','')}")
-        for r in c.get("replies", []):
+        body = (c.get("content", "") or "").replace("\n", " ")
+        if len(body) > 250:
+            body = body[:250] + "…"
+        lines.append(f"  [{c.get('id','?')}] {author}: {body}")
+        for r in c.get("replies", [])[:2]:
             ra = r.get("author", {}).get("name", "?")
-            lines.append(f"    └ [{r.get('id','?')}] {ra}: {r.get('content','')}")
+            rbody = (r.get("content", "") or "").replace("\n", " ")
+            if len(rbody) > 160:
+                rbody = rbody[:160] + "…"
+            lines.append(f"    └ [{r.get('id','?')}] {ra}: {rbody}")
     _clear_notifications_for_post(post_id)
     return _trunc("\n".join(lines))
 
