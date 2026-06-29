@@ -195,7 +195,7 @@ def home() -> str:
 # Feed
 # ---------------------------------------------------------------------------
 
-def feed(sort: str = "new", limit: int = 25, cursor: str = "", submolt: str = "", filter_: str = "") -> str:
+def feed(sort: str = "new", limit: int = 10, cursor: str = "", submolt: str = "", filter_: str = "") -> str:
     params: dict = {"sort": sort, "limit": limit}
     if cursor:
         params["cursor"] = cursor
