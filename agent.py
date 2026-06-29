@@ -61,7 +61,11 @@ _FG_WAIT         = 60.0  # seconds /fg blocks before returning "still running"
 # of thought across the action boundary instead of re-deriving from zero.
 # Placed in the ephemeral tail (like the timestamp) so it only invalidates the
 # trailing-edge KV-cache slot, leaving append-only history cached. 0 disables.
-_THINK_CARRYOVER_CHARS = 400
+# DISABLED: this was a 14B band-aid (its <think> is dropped from history, so we
+# re-surfaced the tail). The 9B copies its reasoning into agent_text, which is
+# already retained in history — so carryover is redundant AND re-surfacing a
+# stale plan reinforced hard loops (see the Telegram re-injection fix). 0 = off.
+_THINK_CARRYOVER_CHARS = 0
 
 
 @dataclass
@@ -120,7 +124,8 @@ class Agent:
         )
         self._history:      list[Turn] = []
         self._log           = SessionLogger()
-        self._pending_tg:          list[str] = []   # Telegram messages waiting to be shown
+        self._pending_tg:          list[str] = []   # Telegram messages to show once, this turn
+        self._unreplied_tg:        int       = 0    # delivered-but-unanswered TG count (shown as an indicator, not re-injected)
         self._pending_corrections: list[str] = []   # injected at start of next turn
         self._loop_detector = CommandLoopDetector()
         self._job_mgr       = JobManager()
@@ -271,6 +276,15 @@ class Agent:
     # ------------------------------------------------------------------
 
     def _step(self):
+        # Telegram shown last step is now delivered — retire it to a counter
+        # instead of re-injecting the full text every turn. A re-shown message
+        # reads as a *fresh* command and drives hard loops (observed live: a
+        # one-off "update the harness" instruction hammered every turn until a
+        # new message displaced it). The indicator nudges a reply without
+        # re-issuing the instruction.
+        if self._pending_tg:
+            self._unreplied_tg += len(self._pending_tg)
+            self._pending_tg.clear()
         # Drain any messages Foxo sent via Telegram since the last step.
         if self._tg:
             for m in self._tg.drain_inbox():
@@ -407,6 +421,7 @@ class Agent:
                 result = self._run_command(eff)
             if command.lower().startswith("/telegram"):
                 self._pending_tg.clear()
+                self._unreplied_tg = 0   # a reply clears the unreplied backlog
             self._record_obs(turn, command, result, command=True)
             return
 
@@ -725,6 +740,7 @@ class Agent:
             result = self._run_command(stripped)
             if stripped.lower().startswith("/telegram "):
                 self._pending_tg.clear()
+                self._unreplied_tg = 0
             self._record_obs(turn, stripped, result, command=True)
             return
 
@@ -855,13 +871,14 @@ class Agent:
         # only invalidate the trailing-edge cache slot.
         now = datetime.now().strftime("%d %b %Y, %H:%M")
         ctx = f" | context: {self._last_ctx_pct}% used" if self._last_ctx_pct else ""
+        unrep = f" | unreplied Telegram: {self._unreplied_tg}" if self._unreplied_tg else ""
         raw_cwd = self._dispatch._cwd
         try:
             cwd_display = "~/" + str(Path(raw_cwd).relative_to(Path.home()))
         except ValueError:
             cwd_display = raw_cwd
         messages.append({"role": "system", "content":
-            f"[system: current time is {now} | cwd: {cwd_display}{ctx}]"})
+            f"[system: current time is {now} | cwd: {cwd_display}{ctx}{unrep}]"})
 
         return messages
 
