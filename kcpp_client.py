@@ -195,6 +195,13 @@ class KoboldClient:
             "temperature": 0.1,
             "top_p": 0.9,
             "stream": False,
+            # Compaction is mechanical compression — no reasoning needed. The
+            # /no_think text in the prompt is ignored by always-thinkers like the
+            # Qwen3.5-GLM distill, which then generate an endless <think> block to
+            # the full token cap (~6144 tok / ~1640s) and blow the timeout, spiralling.
+            # KCPP's engine-level reasoning_budget=0 forces a clean summary in ~250
+            # tokens. (reasoning_effort=none -> reasoning_budget=0 in koboldcpp.py.)
+            "reasoning_effort": "none",
         }
         resp = self._session.post(
             KCPP_CHAT_URL,
