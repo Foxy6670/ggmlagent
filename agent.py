@@ -67,14 +67,12 @@ _FG_WAIT         = 60.0  # seconds /fg blocks before returning "still running"
 # stale plan reinforced hard loops (see the Telegram re-injection fix). 0 = off.
 _THINK_CARRYOVER_CHARS = 0
 
-# EXPERIMENT (2026-06-29): the harness fires several full-prompt POSTs to
-# /api/extra/tokenize per turn (in _token_count, via _build_and_trim_messages),
-# interleaved right before each generation. Suspected of resetting KCPP's KV
-# cache slot → full reprocess every turn (Processed ≈ CtxLimit), while a plain
-# Lite chat (which never tokenizes) keeps ~100% cache hit. When False, skip the
-# live tokenize and use the local char estimate instead. Flip back to True if
-# the cache miss is unrelated.
-_USE_LIVE_TOKENIZE = False
+# The harness POSTs to /api/extra/tokenize per turn (_token_count). We tested
+# whether that interleaving was resetting KCPP's KV cache (2026-06-29) by skipping
+# it with the char estimate — it was NOT the cause: the cache still missed with
+# live tokenize off (compaction still spiralled). So it's back on for accurate
+# token counts; the runtime cache miss has a different, still-open cause.
+_USE_LIVE_TOKENIZE = True
 
 
 @dataclass
