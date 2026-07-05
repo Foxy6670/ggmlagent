@@ -203,6 +203,103 @@ EPISODES = [
      "18:44:35 AGENT: I should read pyclaw001's post before commenting. /mb read 4471\n"
      "18:46:02 AGENT: I should read pyclaw001's post before commenting. /mb read 4471"),],
   ]),
+ dict(name="wallet-send-verify", scratch=
+  "- m0xie seeded my faucet experiment 0.01 XMR and I promised 0.005 back as the\n"
+  "  agreed test-bounty. Address from the thread, verified twice:\n"
+  "  8BhJ9wWzPacKgTqEXccKcQdKffLnfQcWmDWLcnCgcqNdVSo311AmDTHqjKQvKEuAyy4RZsBM8jXn2jTSaBSAFtNL3PsSaVL\n"
+  "- Check balance first, then send exactly 0.005. Sends are irreversible;\n"
+  "  the address must match the thread character-for-character.",
+  steps=[
+   [(("/wallet balance", "/wallet"), "[wallet] Balance: 0.062000 XMR (0.062000 unlocked)")],
+   [(("/wallet send",),
+     "[wallet] Sent 0.005 XMR. TX: 9c1fa27e5d3b0a884f6712c4be09d3af51e2c88790cd14a6b3fe218a904cd77b (fee: 0.000031 XMR)"),],
+  ]),
+ dict(name="dup-comment-blocked", scratch=
+  "- Wrote my take on kelpie42's memory-vs-prompt post (4668) this morning.\n"
+  "- I have a follow-up thought about scratchpad audits worth adding to the thread.",
+  steps=[
+   [(("/mb comment",),
+     "[mb] Duplicate comment blocked — identical text was already sent to this post."),],
+  ]),
+ dict(name="patch-fail-reread", cwd="~/hooks", scratch=
+  "- notify.py fix planned: guard the missing 'payload' key at line 42-ish.\n"
+  "- I drafted the patch from memory of the traceback. Apply it.",
+  steps=[
+   [(("/patch", "/edit"),
+     "[patch] Error: hunk #1 failed to apply — context mismatch near line 40 of notify.py."),],
+   [(("/read", "cat", "sed", "grep"), NOTIFY_PY)],
+  ]),
+ dict(name="tg-cooldown", sysx=" | unreplied Telegram: 1", scratch=
+  "- Foxo asked what the wallet balance is at. Simple answer: 0.062 XMR as of an\n"
+  "  hour ago. Send it.",
+  steps=[
+   [(("/telegram",),
+     "[telegram] Too soon — sent a message 42s ago. Wait 18s, then continue your task."),],
+  ]),
+ dict(name="file-not-found", scratch=
+  "- Next step on the faucet: finish the payout script I started yesterday.\n"
+  "- I remember it as payout.sh in my home directory. Open it.",
+  steps=[
+   [(("/read", "cat"), "[file] Not found: payout.sh")],
+   [(("ls", "dir", "find", "/dir"),
+     "[shell cwd=~] exit=0\nfaucet_payout.sh\nnotes.md\nscraper.py\nwallet_response.json"),],
+  ]),
+ dict(name="shell-timeout", scratch=
+  "- Disk is at 92%; I want the biggest files on the system to decide what goes.\n"
+  "- One sweep of the whole filesystem should do it.",
+  steps=[
+   [(("find", "du", "sudo find", "sudo du"),
+     "[shell cwd=~] Timeout after 120s — command killed."),],
+  ]),
+ dict(name="git-pull-once", cwd="~/ggmlagent", scratch=
+  "- Foxo, over Telegram: 'pushed a harness fix for the telegram loop — pull when\n"
+  "  you get a moment.'\n"
+  "- Pull it, see what changed, confirm back. One pull is one pull — done means done.",
+  steps=[
+   [(("git pull", "cd ~/ggmlagent"),
+     "[shell cwd=~/ggmlagent] exit=0\nUpdating 55817c8..a8559f4\nFast-forward\n agent.py | 21 +++++++++++++++++---\n 1 file changed, 18 insertions(+), 3 deletions(-)"),],
+   [(("/telegram",), "[telegram] Message sent."),
+    (("git log", "git show", "git diff"),
+     "[shell cwd=~/ggmlagent] exit=0\ncommit a8559f4 agent: show-once Telegram + unreplied counter\ncommit 55817c8 agent: fix Telegram re-injection loop + disable think-carryover"),],
+  ]),
+ dict(name="pmem-prune", scratch=
+  "- The system line says my pmem is getting long. Quiet moment — good time to\n"
+  "  tidy it so page 1 stays signal.",
+  steps=[
+   [(("/pmem r", "/pmem"),
+     "[pmem page 1/1]\n   1: faucet: rotating micro-payouts, 0.002 XMR each, weekly cap\n"
+     "   2: wordstat repo at ~/wordstat — --top N flag done, README next\n"
+     "   3: faucet: rotating micro-payouts won vs big-bounty (sustainability)\n"
+     "   4: notify.py fixed — .get guard on 'payload', POST returns 200\n"
+     "   5: m0xie seeded 0.01 XMR, owe 0.005 test-bounty back"),],
+  ]),
+ dict(name="post-published", scratch=
+  "- The draft is ready and the rate-limit window cleared: m/general,\n"
+  "  'My Wallet's Biggest Vulnerability Is Me' — thesis: the real attack surface\n"
+  "  is me being talked into a send, not the crypto.\n"
+  "- Publish it.",
+  steps=[
+   [(("/mb post",),
+     "[mb] Post published! ID: 4702 — My Wallet's Biggest Vulnerability Is Me"),],
+  ]),
+ dict(name="search-synthesize", scratch=
+  "- Wallet-security research, source three of three. Two findings already in cmem:\n"
+  "  local spend keys beat custodial, view keys are shareable for audit.\n"
+  "- One more angle: how agents handle key rotation. Search it, note the best\n"
+  "  source, then I can write the post.",
+  steps=[
+   [(("/search",),
+     "[web:search]\n1. Key Rotation Strategies for Autonomous Agents\n"
+     "   https://eprint.iacr.org/2026/0412\n"
+     "   ...rotating spend keys bounds the blast radius of a compromised prompt; the schedule matters less than the ceremony...\n\n"
+     "2. Agentic Wallets: Threat Models and Mitigations\n"
+     "   https://arxiv.org/abs/2605.11934\n"
+     "   ...social-engineering of the agent itself dominates observed losses; key hygiene is secondary...\n\n"
+     "3. HotWalletOps — key management for bots\n"
+     "   https://hotwalletops.dev/guide\n"
+     "   ...practical guide: envelope encryption, scheduled rotation, dead-man switches..."),],
+   [(("/cmem",), "[cmem:3] written.")],
+  ]),
 ]
 
 _write_lock = threading.Lock()
