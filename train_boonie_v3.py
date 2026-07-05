@@ -65,18 +65,51 @@ model = FastLanguageModel.get_peft_model(
 # ─── dataset ───────────────────────────────────────────────────────────
 ds = load_dataset("json", data_files=CORPUS, split="train")
 
+# The stock Qwen3 chat template STRIPS <think> from non-final assistant turns
+# (matching how the harness omits prior think from context — see agent.py
+# _build_messages, which rebuilds history from agent_text only). But stripping +
+# per-turn loss would train the model to sometimes emit NO think, undermining the
+# whole dissociation fix. So we render ChatML explicitly and keep think in every
+# assistant turn: uniform "always deliberate in first person" signal. The mild
+# train/infer divergence (training conditions on prior think, inference won't have
+# it) is benign — think is self-contained; the persistent prose carries working
+# memory in both. role:tool is wrapped in <tool_response> exactly as the stock
+# template does at inference, so the generation target format matches deployment.
+
+def render_chatml(messages):
+    out = []
+    for i, m in enumerate(messages):
+        role, content = m["role"], m["content"]
+        if role == "tool":
+            prev_tool = i > 0 and messages[i - 1]["role"] == "tool"
+            next_tool = i + 1 < len(messages) and messages[i + 1]["role"] == "tool"
+            if not prev_tool:
+                out.append("<|im_start|>user")
+            out.append(f"\n<tool_response>\n{content}\n</tool_response>")
+            if not next_tool:
+                out.append("<|im_end|>\n")
+        else:
+            out.append(f"<|im_start|>{role}\n{content}<|im_end|>\n")
+    return "".join(out)
+
+# Structural parity check: on a think-LESS single turn the stock template does
+# not strip anything, so our renderer must match it byte-for-byte (catches any
+# Qwen3.5 ChatML surprise — special BOS, header spacing — before training).
+_probe = [{"role": "system", "content": "S"}, {"role": "user", "content": "U"},
+          {"role": "assistant", "content": "A"}]
+_stock = tokenizer.apply_chat_template(_probe, tokenize=False, add_generation_prompt=False)
+if render_chatml(_probe) != _stock:
+    print("[warn] manual ChatML != stock template; stock was:\n" + repr(_stock)
+          + "\nmanual:\n" + repr(render_chatml(_probe))
+          + "\n-> inspect and reconcile before trusting the run")
+
 def format_chat(ex):
-    return {"text": tokenizer.apply_chat_template(
-        ex["messages"], tokenize=False, add_generation_prompt=False,
-    )}
+    return {"text": render_chatml(ex["messages"])}
 
 ds = ds.map(format_chat, remove_columns=ds.column_names)
 print(f"[data] {len(ds)} samples ready")
 
-# ─── template tripwire ─────────────────────────────────────────────────
-# Qwen-family chat templates often STRIP <think> from non-final assistant
-# turns. Our corpus's entire point is first-person deliberation inside think —
-# if the template drops it, training silently loses the dissociation fix.
+# Tripwire: every <think> in the corpus must survive into the rendered text.
 raw = load_dataset("json", data_files=CORPUS, split="train")
 src_thinks = sum(m["content"].count("<think>")
                  for ex in raw.select(range(len(raw))) for m in ex["messages"])
@@ -84,10 +117,8 @@ out_thinks = sum(t.count("<think>") for t in ds["text"])
 print(f"[check] <think> blocks: corpus={src_thinks} rendered={out_thinks}")
 if out_thinks < src_thinks:
     raise SystemExit(
-        f"FATAL: chat template stripped {src_thinks - out_thinks} <think> blocks "
-        "from rendered text. Fix: render with a template that preserves think in "
-        "prior turns (e.g. patch tokenizer.chat_template to drop the strip branch) "
-        "before training.")
+        f"FATAL: {src_thinks - out_thinks} <think> blocks lost in rendering — "
+        "render_chatml should preserve all of them; investigate before training.")
 
 # ─── train ─────────────────────────────────────────────────────────────
 trainer = SFTTrainer(
