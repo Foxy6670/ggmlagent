@@ -129,7 +129,9 @@ print("[export] saving LoRA adapter…")
 model.save_pretrained(f"{OUTPUT}/lora")
 tokenizer.save_pretrained(f"{OUTPUT}/lora")
 
-# Q5_K_M — the deployable quant for the TUF's RTX 3050 (Q8 spills to CPU)
-print("[export] producing GGUF Q5_K_M for KoboldCPP…")
-model.save_pretrained_gguf(f"{OUTPUT}/gguf", tokenizer, quantization_method="q5_k_m")
-print(f"[done] GGUF at {OUTPUT}/gguf/")
+# Q8_0 = Boonie's deployment quant (TUF; spills a little VRAM, quality first).
+# Q5_K_M = the smaller sibling (fallback / faster option) from the same merge.
+print("[export] producing GGUF Q8_0 + Q5_K_M for KoboldCPP…")
+model.save_pretrained_gguf(f"{OUTPUT}/gguf", tokenizer,
+                           quantization_method=["q8_0", "q5_k_m"])
+print(f"[done] GGUFs at {OUTPUT}/gguf/")
