@@ -23,15 +23,16 @@ Appends to data/episodes_v1.jsonl. Usage:
   python3 episode_gen.py                    # full bank, 3 samples, 5 workers
   python3 episode_gen.py --only debug-notify --samples 1
 """
-import json, sys, os, re, argparse, threading, urllib.request
+import json, sys, os, re, argparse, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _DIR)
 import corpus_gen  # patched SYSTEM (full command surface) + shared gates
 from corpus_gen import TIMES, MAX_RETRY
-from resume_gen import URL, MODEL, load_key, split_reasoning_action, THIRD, POSSESS, SELFNAME
+from resume_gen import MODEL, load_key, split_reasoning_action, THIRD, POSSESS, SELFNAME
 from normalize_actions import normalize_action, transcode, valid
+import orclient
 
 OUT = os.path.join(_DIR, "data", "episodes_v1.jsonl")
 TEMPS = [0.6, 0.8, 0.95]
@@ -308,11 +309,7 @@ _write_lock = threading.Lock()
 def _gen(messages, key, temp, model=MODEL):
     payload = {"model": model, "messages": messages,
                "max_tokens": 600, "temperature": temp}
-    req = urllib.request.Request(URL, data=json.dumps(payload).encode(), headers={
-        "Content-Type": "application/json", "Authorization": f"Bearer {key}",
-        "HTTP-Referer": "https://localhost/frontier-boonie", "X-Title": "frontier-boonie epgen"})
-    with urllib.request.urlopen(req, timeout=180) as r:
-        resp = json.loads(r.read())
+    resp = orclient.chat(payload, key)
     m = resp["choices"][0].get("message", {})
     return (m.get("content") or m.get("reasoning") or "")
 
@@ -398,7 +395,7 @@ def run_episode(ep, key, temp, now, model=MODEL):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--samples", type=int, default=3)
-    ap.add_argument("--workers", type=int, default=5)
+    ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--only", type=str, default=None)
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--model", type=str, default=MODEL)
@@ -413,7 +410,9 @@ def main():
         eps = eps[:2]
 
     key = load_key()
-    jobs = [(ep, TEMPS[s % len(TEMPS)], TIMES[(i * samples + s) % len(TIMES)])
+    jobs = [(ep, round(min(1.05, max(0.5,
+                TEMPS[s % len(TEMPS)] + ((i * 7 + s * 3) % 5 - 2) * 0.02)), 2),
+             TIMES[(i * samples + s) % len(TIMES)])
             for i, ep in enumerate(eps) for s in range(samples)]
     done, truncated = 0, 0
     with open(OUT, "a") as fout, ThreadPoolExecutor(max_workers=a.workers) as pool:
