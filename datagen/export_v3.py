@@ -75,16 +75,32 @@ def normalize_submolt(cmd):
         return f"{m.group(1)}general{m.group(4)}", True
     return cmd, False
 
+def split_aloud(reasoning):
+    """think-aloud vs working prose (mode 'aloud', the V3 default).
+
+    The dissociation site is the THINK channel ("The user is trying...") —
+    retraining its voice needs the full first-person deliberation IN think.
+    The visible prose keeps only the working line (plan/conclusion), which is
+    what must survive: the harness persists agent_text and drops think_text.
+    One-liners are mechanical turns: no deliberation, empty think.
+    """
+    sents = [s.strip() for s in _SENT.split(reasoning.strip()) if s.strip()]
+    if len(sents) <= 1:
+        return "", reasoning.strip()
+    return reasoning.strip(), sents[-1]
+
 def render_assistant(reasoning, output, mode):
     tc = output[len(reasoning):].strip() if output.startswith(reasoning) else \
          output[output.find("<tool_call>"):]
-    if mode == "empty":
-        think = ""
+    if mode == "aloud":
+        think, prose = split_aloud(reasoning)
+    elif mode == "empty":
+        think, prose = "", reasoning
     elif mode == "full":
-        think = reasoning
-    else:
-        think = brief_think(reasoning)
-    return f"<think>\n{think}\n</think>\n\n{reasoning}\n\n{tc}"
+        think, prose = reasoning, reasoning
+    else:  # brief
+        think, prose = brief_think(reasoning), reasoning
+    return f"<think>\n{think}\n</think>\n\n{prose}\n\n{tc}"
 
 def fix_record_cmd(rec):
     """Submolt-normalize command + tool_call inside output. Returns fixed flag."""
@@ -103,7 +119,7 @@ def sys_block(scratch, time, cwd="~/", sysx=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--think", choices=["brief", "empty", "full"], default="brief")
+    ap.add_argument("--think", choices=["aloud", "brief", "empty", "full"], default="aloud")
     ap.add_argument("--out", default=OUT_DEFAULT)
     ap.add_argument("--min-episode-turns", type=int, default=2,
                     help="drop episode records shorter than this (prefix stubs)")
