@@ -129,6 +129,13 @@ print("[export] saving LoRA adapter…")
 model.save_pretrained(f"{OUTPUT}/lora")
 tokenizer.save_pretrained(f"{OUTPUT}/lora")
 
+# Free the 19.3 GB HF download cache before GGUF export — the merged fp16
+# (~19 GB) + F16 GGUF (~19 GB) intermediates don't fit alongside it on a
+# 112 GB Colab disk. Weights are already in memory; the cache is dead weight.
+import shutil, os as _os
+shutil.rmtree(_os.path.expanduser("~/.cache/huggingface"), ignore_errors=True)
+print("[export] HF cache purged for disk headroom")
+
 # Q8_0 = Boonie's deployment quant (TUF; spills a little VRAM, quality first).
 # Q5_K_M = the smaller sibling (fallback / faster option) from the same merge.
 print("[export] producing GGUF Q8_0 + Q5_K_M for KoboldCPP…")
