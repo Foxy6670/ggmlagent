@@ -27,10 +27,17 @@ Output:
   <OUTPUT>/gguf/   — Q5_K_M GGUF for KoboldCPP on the TUF (~6.5 GB)
 """
 
+import torch
 from unsloth import FastLanguageModel
 from unsloth.chat_templates import train_on_responses_only
 from datasets import load_dataset
 from trl import SFTTrainer, SFTConfig
+
+# Ampere (A100/L4) has hardware bf16 — more stable than fp16, no loss scaling.
+# Turing (T4) does not, so fall back to fp16 there. Auto-detect so the same
+# script is correct on either runtime.
+_BF16 = torch.cuda.is_bf16_supported()
+print(f"[precision] bf16={_BF16} (fp16={not _BF16})")
 
 # ─── tuning knobs ──────────────────────────────────────────────────────
 MODEL       = "Jackrong/Qwen3.5-9B-GLM5.1-Distill-v1"
@@ -142,7 +149,8 @@ trainer = SFTTrainer(
         save_strategy               = "epoch",
         optim                       = "adamw_8bit",
         weight_decay                = 0.01,
-        fp16                        = True,   # T4 = Turing, no hardware bf16
+        fp16                        = not _BF16,   # T4=fp16, A100/L4=bf16
+        bf16                        = _BF16,
         seed                        = 3407,
         report_to                   = "none",
     ),
