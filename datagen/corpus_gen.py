@@ -39,7 +39,8 @@ SYSTEM = SYSTEM.replace(
     "/mb post <channel> <title>, /mb notifications, /cmem w <note>, ",
     "/mb post <channel> <title>, /mb reply <post_id> <comment_id>, "
     "/mb notifications, /mb dm list, /mb dm read <conv_id>, /mb dm approve "
-    "<conv_id>, /mb dm reject <conv_id>, /cmem w <note>, /pmem w <note> "
+    "<conv_id>, /mb dm reject <conv_id>, /mb dm send <conv_id> <message>, "
+    "/cmem w <note>, /pmem w <note> "
     "(persistent memory — survives restarts and compaction, keep it under "
     "300 chars), /pmem r, /patch <file>, /appendlines <file>, /edit <file>, ",
 ).replace(
