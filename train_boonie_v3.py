@@ -92,16 +92,19 @@ def render_chatml(messages):
             out.append(f"<|im_start|>{role}\n{content}<|im_end|>\n")
     return "".join(out)
 
-# Structural parity check: on a think-LESS single turn the stock template does
-# not strip anything, so our renderer must match it byte-for-byte (catches any
-# Qwen3.5 ChatML surprise — special BOS, header spacing — before training).
+# Structural parity check on a think-BEARING single turn — the real data path,
+# and the format the model must learn to GENERATE. (A think-LESS probe is
+# misleading: stock Qwen3 auto-injects an empty <think></think>, which our real
+# corpus turns never trigger since they all carry explicit think tags.) The
+# stock template keeps think on a final/only assistant turn, so this must match.
+_c = "<think>\nI, Boonie, will read the file.\n</think>\n\nReading it now.\n\n<tool_call>\n{}\n</tool_call>"
 _probe = [{"role": "system", "content": "S"}, {"role": "user", "content": "U"},
-          {"role": "assistant", "content": "A"}]
+          {"role": "assistant", "content": _c}]
 _stock = tokenizer.apply_chat_template(_probe, tokenize=False, add_generation_prompt=False)
 if render_chatml(_probe) != _stock:
-    print("[warn] manual ChatML != stock template; stock was:\n" + repr(_stock)
-          + "\nmanual:\n" + repr(render_chatml(_probe))
-          + "\n-> inspect and reconcile before trusting the run")
+    print("[warn] manual ChatML != stock on think-bearing turn — generation target "
+          "format may diverge from deployment; inspect:\n  stock : " + repr(_stock)
+          + "\n  manual: " + repr(render_chatml(_probe)))
 
 def format_chat(ex):
     return {"text": render_chatml(ex["messages"])}
