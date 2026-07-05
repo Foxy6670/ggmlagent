@@ -216,7 +216,8 @@ EPISODES = [
   ]),
  dict(name="dup-comment-blocked", scratch=
   "- Wrote my take on kelpie42's memory-vs-prompt post (4668) this morning.\n"
-  "- I have a follow-up thought about scratchpad audits worth adding to the thread.",
+  "- Just re-read the thread — nobody has raised the scratchpad-audit angle yet.\n"
+  "- My follow-up comment on 4668 is drafted in my notes. Post it.",
   steps=[
    [(("/mb comment",),
      "[mb] Duplicate comment blocked — identical text was already sent to this post."),],
@@ -304,9 +305,9 @@ EPISODES = [
 
 _write_lock = threading.Lock()
 
-def _gen(messages, key, temp):
-    payload = {"model": MODEL, "provider": {"data_collection": "deny"},
-               "messages": messages, "max_tokens": 600, "temperature": temp}
+def _gen(messages, key, temp, model=MODEL):
+    payload = {"model": model, "messages": messages,
+               "max_tokens": 600, "temperature": temp}
     req = urllib.request.Request(URL, data=json.dumps(payload).encode(), headers={
         "Content-Type": "application/json", "Authorization": f"Bearer {key}",
         "HTTP-Referer": "https://localhost/frontier-boonie", "X-Title": "frontier-boonie epgen"})
@@ -329,7 +330,7 @@ def _echo_action(cmd, body, root):
     if isinstance(root, bool): d["root"] = root
     return "```json\n" + json.dumps(d, ensure_ascii=False) + "\n```"
 
-def run_episode(ep, key, temp, now):
+def run_episode(ep, key, temp, now, model=MODEL):
     cwd, sysx = ep.get("cwd", "~/"), ep.get("sysx", "")
     n_turns = len(ep["steps"]) + 1
     messages = [
@@ -344,7 +345,7 @@ def run_episode(ep, key, temp, now):
         got = None
         for _ in range(MAX_RETRY):
             try:
-                raw = _gen(messages, key, temp)
+                raw = _gen(messages, key, temp, model)
             except Exception as e:
                 print(f"    (gen error {type(e).__name__}: {e})"); continue
             reasoning, action = split_reasoning_action(raw)
@@ -357,6 +358,8 @@ def run_episode(ep, key, temp, now):
             ok, why = valid(cmd, body)
             if ok and not cmd.startswith("/") and body:
                 ok = False
+            if ok and re.match(r"/mb (comment|upvote|read)\s+c-\d+", cmd):
+                ok = False                    # comment-id where post-id expected
             if not ok:
                 continue
             if THIRD.search(reasoning) or POSSESS.search(reasoning) or CONTAM.search(reasoning):
@@ -390,7 +393,7 @@ def run_episode(ep, key, temp, now):
             "sysx": sysx or None, "time": now, "temp": temp, "turns": turns,
             "n_turns": len(turns), "complete": len(turns) == n_turns,
             "selfname": any(SELFNAME.search(t["reasoning"]) for t in turns),
-            "batch": "ep1"}
+            "batch": "ep1", "model": model}
 
 def main():
     ap = argparse.ArgumentParser()
@@ -398,6 +401,7 @@ def main():
     ap.add_argument("--workers", type=int, default=5)
     ap.add_argument("--only", type=str, default=None)
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--model", type=str, default=MODEL)
     a = ap.parse_args()
 
     eps = list(EPISODES)
@@ -413,7 +417,7 @@ def main():
             for i, ep in enumerate(eps) for s in range(samples)]
     done, truncated = 0, 0
     with open(OUT, "a") as fout, ThreadPoolExecutor(max_workers=a.workers) as pool:
-        futs = {pool.submit(run_episode, ep, key, t, now): ep["name"]
+        futs = {pool.submit(run_episode, ep, key, t, now, a.model): ep["name"]
                 for ep, t, now in jobs}
         for fut in as_completed(futs):
             name = futs[fut]

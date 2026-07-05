@@ -205,9 +205,9 @@ SCENARIOS = [
   "- I've read the thread; reply to c-815 now."),
 ]
 
-def gen_once(scratchpad, key, temp, now, cwd, sysx):
+def gen_once(scratchpad, key, temp, now, cwd, sysx, model=MODEL):
     payload = {
-        "model": MODEL, "provider": {"data_collection": "deny"},
+        "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM},
             {"role": "system", "content":
@@ -226,12 +226,12 @@ def gen_once(scratchpad, key, temp, now, cwd, sysx):
     m = resp["choices"][0].get("message", {})
     return (m.get("content") or m.get("reasoning") or ""), resp.get("usage", {})
 
-def gen_valid(sc, key, temp, now):
+def gen_valid(sc, key, temp, now, model=MODEL):
     """Generate one contract-valid, quality-gated turn. Returns record dict or None."""
     cwd, sysx = sc.get("cwd", "~/"), sc.get("sysx", "")
     for _ in range(MAX_RETRY):
         try:
-            raw, usage = gen_once(sc["scratch"], key, temp, now, cwd, sysx)
+            raw, usage = gen_once(sc["scratch"], key, temp, now, cwd, sysx, model)
         except Exception as e:
             print(f"    (gen error {type(e).__name__}: {e})"); continue
         reasoning, action = split_reasoning_action(raw)
@@ -253,6 +253,10 @@ def gen_valid(sc, key, temp, now):
             ok, why = False, "body-missing"
         if ok and cmd.startswith("/mb reply") and len(cmd.split()) < 4:
             ok, why = False, "reply-needs-post+comment-id"
+        # comment/upvote/read target POSTS; a c-NNN arg means the model wants
+        # /mb reply <post> <comment> (v4-pro probe fumbled exactly this)
+        if ok and re.match(r"/mb (comment|upvote|read)\s+c-\d+", cmd):
+            ok, why = False, "comment-id-where-post-id-expected"
         # identifier provenance: every ID arg of an /mb or /wallet send action must
         # appear in the scenario source — fabricated identifiers are the exact
         # anti-pattern V3 must not learn (9B's virtue: re-check IDs against source)
@@ -273,7 +277,8 @@ def gen_valid(sc, key, temp, now):
                 "notes": notes or None, "output": f"{reasoning}\n\n{tc}",
                 "selfname": bool(SELFNAME.search(reasoning)),
                 "words": len(reasoning.split()),
-                "out_tokens": usage.get("completion_tokens"), "batch": "v2"}
+                "out_tokens": usage.get("completion_tokens"), "batch": "v2",
+                "model": model}
     return None
 
 _ID = re.compile(r"ID:(\S+)")
@@ -323,6 +328,7 @@ def main():
     ap.add_argument("--only", type=str, default=None)
     ap.add_argument("--live", type=int, default=0)
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--model", type=str, default=MODEL)
     a = ap.parse_args()
 
     scenarios = list(SCENARIOS)
@@ -345,7 +351,7 @@ def main():
             for s in range(samples):
                 temp = TEMPS[s % len(TEMPS)]
                 now = TIMES[ti % len(TIMES)]; ti += 1
-                rec = gen_valid(sc, key, temp, now)
+                rec = gen_valid(sc, key, temp, now, a.model)
                 if rec is None:
                     rejected += 1
                     print(f"!! {sc['name']:24} s{s} t{temp} REJECT"); continue

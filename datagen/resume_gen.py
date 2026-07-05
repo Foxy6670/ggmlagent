@@ -181,7 +181,7 @@ def valid_action(cmd, body):
 
 def gen_once(scratchpad, key, temp, model=MODEL):
     payload = {
-        "model": model, "provider": {"data_collection": "deny"},
+        "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM},
             {"role": "system", "content": "════ YOUR SCRATCHPAD (notes you wrote to yourself) ════\n" + scratchpad},
