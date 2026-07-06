@@ -27,6 +27,7 @@ Output:
   <OUTPUT>/gguf/   — Q5_K_M GGUF for KoboldCPP on the TUF (~6.5 GB)
 """
 
+import os
 import torch
 from unsloth import FastLanguageModel
 from unsloth.chat_templates import train_on_responses_only
@@ -40,13 +41,19 @@ _BF16 = torch.cuda.is_bf16_supported()
 print(f"[precision] bf16={_BF16} (fp16={not _BF16})")
 
 # ─── tuning knobs ──────────────────────────────────────────────────────
-MODEL       = "Jackrong/Qwen3.5-9B-GLM5.1-Distill-v1"
-MAX_SEQ_LEN = 4096           # longest corpus sample ≈ 3k tokens; 9B-4bit on T4
-                             # has headroom to raise to 8192 if ever needed
+# Base/output/batch are env-overridable so ONE script trains either target:
+#   9B  (default):   !python train_boonie_v3.py
+#   14B (control):   !BOONIE_BASE=unsloth/Qwen3-14B-bnb-4bit \
+#                     BOONIE_OUT=boonie_14b_v3_1 BOONIE_BATCH=2 python train_boonie_v3.py
+# The 14B is the CONTROL experiment — does SFT on the V3.1 corpus fix the framing
+# that prompting alone couldn't? Same corpus, same recipe; only the base differs.
+MODEL       = os.environ.get("BOONIE_BASE", "Jackrong/Qwen3.5-9B-GLM5.1-Distill-v1")
+MAX_SEQ_LEN = 4096           # longest corpus sample ≈ 3k tokens; 4bit has headroom
 CORPUS      = "/content/boonie_corpus.jsonl"   # upload boonie_corpus_v3.jsonl here
-OUTPUT      = "boonie_v3_1"
-EPOCHS      = 2              # 1101 samples; watch loss — if still falling hard
-                             # at epoch 2's end, a 3rd epoch is cheap
+OUTPUT      = os.environ.get("BOONIE_OUT", "boonie_v3_1")
+BATCH       = int(os.environ.get("BOONIE_BATCH", "4"))   # 14B: set 2 (bigger model)
+EPOCHS      = 2              # ~1k samples; watch loss — epoch-1 ckpt often the best
+                             # deploy (V3.0 overfit slightly by epoch 2)
 LR          = 2e-4
 
 # ─── load base + attach LoRA ───────────────────────────────────────────
@@ -143,9 +150,9 @@ trainer = SFTTrainer(
     args = SFTConfig(
         output_dir                  = OUTPUT,
         num_train_epochs            = EPOCHS,
-        per_device_train_batch_size = 4,   # A100 has room; ~2x throughput vs V3.0's
-        gradient_accumulation_steps = 2,   # batch1. Effective batch 8 keeps enough
-                                           # steps (~250 over 2 epochs) on ~1k samples.
+        per_device_train_batch_size = BATCH,   # A100 has room; effective batch =
+        gradient_accumulation_steps = 2,        # BATCH*2 (8 for the 9B) — keeps
+                                                # enough steps on a ~1k-sample corpus.
         warmup_ratio                = 0.1,
         learning_rate               = LR,
         lr_scheduler_type           = "cosine",
