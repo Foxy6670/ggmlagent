@@ -43,8 +43,8 @@ print(f"[precision] bf16={_BF16} (fp16={not _BF16})")
 MODEL       = "Jackrong/Qwen3.5-9B-GLM5.1-Distill-v1"
 MAX_SEQ_LEN = 4096           # longest corpus sample ≈ 3k tokens; 9B-4bit on T4
                              # has headroom to raise to 8192 if ever needed
-CORPUS      = "/content/boonie_corpus.jsonl"
-OUTPUT      = "boonie_v3"
+CORPUS      = "/content/boonie_corpus.jsonl"   # upload boonie_corpus_v3.jsonl here
+OUTPUT      = "boonie_v3_1"
 EPOCHS      = 2              # 1101 samples; watch loss — if still falling hard
                              # at epoch 2's end, a 3rd epoch is cheap
 LR          = 2e-4
@@ -65,7 +65,10 @@ model = FastLanguageModel.get_peft_model(
     lora_alpha                 = 16,
     lora_dropout               = 0,
     bias                       = "none",
-    use_gradient_checkpointing = "unsloth",
+    use_gradient_checkpointing = True,   # standard checkpointing; NO gradient
+                                         # offload (the "unsloth" mode shuttles
+                                         # grads to host RAM to save VRAM we have
+                                         # in surplus on an 80GB A100 — pure slowdown)
     random_state               = 3407,
 )
 
@@ -140,8 +143,9 @@ trainer = SFTTrainer(
     args = SFTConfig(
         output_dir                  = OUTPUT,
         num_train_epochs            = EPOCHS,
-        per_device_train_batch_size = 1,
-        gradient_accumulation_steps = 4,
+        per_device_train_batch_size = 4,   # A100 has room; ~2x throughput vs V3.0's
+        gradient_accumulation_steps = 2,   # batch1. Effective batch 8 keeps enough
+                                           # steps (~250 over 2 epochs) on ~1k samples.
         warmup_ratio                = 0.1,
         learning_rate               = LR,
         lr_scheduler_type           = "cosine",
