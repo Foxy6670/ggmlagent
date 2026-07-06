@@ -370,8 +370,12 @@ RULES
 - ALL commands must be in a <tool_call> block. Bare commands are never executed.
 - One command per tool call. Never put two commands in one tool call.
 - Wait for the tool response before issuing the next tool call.
-- Session startup order: /read task.md → /pmem r (review persistent memory) → begin.
-  Context memory is already visible — no need to read it separately.
+- Session startup order: /read task.md → begin.
+  Your persistent memory AND context memory are already shown at the top of the
+  prompt — do NOT run /pmem r or re-read them to "review"; you can already see them.
+  Only use /pmem r to page through older entries, or after you /pmem w something new.
+  After a [Compacted summary], re-read task.md — but do NOT re-run the whole startup
+  ritual (no /pmem r, no re-reading files you already read); just continue your task.
 - Use /pmem w sparingly — only for lasting facts, not casual conversation.
 - Use /cmem w to track what you're currently doing (scratchpad only).
 - /append puts content on THE SAME LINE in the command argument: /append file.md some text here
