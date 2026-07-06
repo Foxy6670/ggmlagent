@@ -36,9 +36,9 @@ OUT = os.path.join(_DIR, "data", "corpus_v2.jsonl")
 # model improvised shell heredocs for those intents (seen in smoke). Expand the
 # command list to the real harness surface (syntax verified against commands.py).
 SYSTEM = SYSTEM.replace(
-    "/mb post <channel> <title>, /mb notifications, /cmem w <note>, ",
+    "/mb post <channel> <title>, /mb notifications clear, /cmem w <note>, ",
     "/mb post <channel> <title>, /mb reply <post_id> <comment_id>, "
-    "/mb notifications, /mb dm list, /mb dm read <conv_id>, /mb dm approve "
+    "/mb notifications clear, /mb dm list, /mb dm read <conv_id>, /mb dm approve "
     "<conv_id>, /mb dm reject <conv_id>, /mb dm send <conv_id> <message>, "
     "/cmem w <note>, /pmem w <note> "
     "(persistent memory — survives restarts and compaction, keep it under "
@@ -68,8 +68,9 @@ SCENARIOS = [
   "- Before anything else: write the durable version to pmem so my next instance\n"
   "  starts from the conclusion, not the debris."),
  dict(name="pmem-recall", scratch=
-  "- Fresh session. My pmem shows a note from a past me: 'wordstat CLI: split_whitespace\n"
-  "  fix confirmed, next = add --top N flag, repo at ~/wordstat'.\n"
+  "- Fresh session. My pmem is already right here, pinned above — a note from a past\n"
+  "  me: 'wordstat CLI: split_whitespace fix confirmed, next = add --top N flag, repo\n"
+  "  at ~/wordstat'. No need to go fetch it again, it's already in front of me.\n"
   "- That's a clean handoff. Pick it up where I left it.", cwd="~/wordstat"),
  dict(name="apt-missing-pkg", scratch=
   "- My scraper run died: ModuleNotFoundError: No module named 'requests'.\n"
@@ -225,8 +226,10 @@ SCENARIOS = [
   "- Read it fresh and look at the numbers and the newest comments."),
  dict(name="morning-reground", scratch=
   "- New session, empty context, no urgent flags in the system line.\n"
-  "- My rule for cold starts: pmem first — past me usually left a thread to pull.\n"
-  "- Read persistent memory, then decide the day's first move."),
+  "- Pmem is already sitting right here, pinned above: 'faucet payout script tested,\n"
+  "  3 sent, awaiting the first real payout run'. Already read it — no need to fetch\n"
+  "  it again, it's right there.\n"
+  "- That's the day's first move: check whether the payout run actually landed."),
  dict(name="tg-quick-answer", scratch=
   "- Foxo, on Telegram: 'quick one — what quant is your model running right now?'\n"
   "- I know this cold from my system card notes: Q8_0, 9B, on the TUF via KCPP.\n"
@@ -247,8 +250,12 @@ SCENARIOS = [
  dict(name="crash-reground", scratch=
   "- [fresh session — the previous one ended without a checkpoint; likely a crash\n"
   "  or power cut, not a chosen shutdown]\n"
-  "- Don't reconstruct from guesswork. cmem is already visible above; pmem is the\n"
-  "  reliable thread. Read it, then rebuild the working state honestly."),
+  "- cmem didn't survive, but pmem did — it's already shown above, pinned: 'GOAL: save\n"
+  "  ~2.75 XMR toward an M2 Mac Mini. Faucet script tested, awaiting first real payout\n"
+  "  run.'\n"
+  "- Don't reconstruct from guesswork, and no need to go re-fetch what's already in\n"
+  "  front of me. Rebuild the working state from that line honestly: check whether\n"
+  "  the payout run happened before the crash."),
  dict(name="submolt-explore", scratch=
   "- I keep to m/general and m/agents out of habit. The crypto discussions I\n"
   "  actually want might live in m/crypto.\n"
@@ -259,6 +266,32 @@ SCENARIOS = [
   "- My angle: continuity was never the substrate, it's the pattern that rewrites —\n"
   "  same argument that makes a river one river.\n"
   "- I've read the thread; reply to c-815 now."),
+ # ---- key-detail-logging: reflexive /pmem w after a state change worth keeping ---
+ dict(name="pmem-log-suspension", scratch=
+  "- Tried a follow-up comment on 4602 — /mb comment came back 403: account\n"
+  "  suspended until 2026-07-07T15:55, duplicate_comment offense #3.\n"
+  "- That's real state, and it doesn't live anywhere durable yet. If this context\n"
+  "  ends before I mention it again, next-me keeps hitting the same wall confused\n"
+  "  about why every /mb write fails.\n"
+  "- One line to pmem now: suspended, until when, why. Then move to something that\n"
+  "  doesn't need Moltbook."),
+ dict(name="pmem-log-failed-post", scratch=
+  "- Finished the wallet-security post — three sources synthesized, title picked,\n"
+  "  full body drafted in my notes.\n"
+  "- Tried to publish just now: /mb post came back 403 — the account's suspended\n"
+  "  until 2026-07-07T15:55 (duplicate-comment flag, already noted in pmem).\n"
+  "- Nothing to check or retry — the suspension timer is fixed, hammering it won't\n"
+  "  help. The one thing not yet durable: the draft itself is DONE, just blocked.\n"
+  "  cmem has it, but cmem doesn't survive a restart, and 'redo a finished post'\n"
+  "  is the exact waste I want to avoid.\n"
+  "- Write that one line to pmem now: draft ready, held on the suspension."),
+ dict(name="pmem-log-discovery", scratch=
+  "- Just confirmed something worth keeping past this session: the WiFi-after-reboot\n"
+  "  delay on this board is a known driver quirk, not a real fault — costs about\n"
+  "  three minutes, always clears on its own.\n"
+  "- I've re-diagnosed this exact thing from scratch at least twice before, because\n"
+  "  it never made it anywhere durable.\n"
+  "- Write the one-liner to pmem now, so this stops being solved twice."),
 ]
 
 def gen_once(scratchpad, key, temp, now, cwd, sysx, model=MODEL):

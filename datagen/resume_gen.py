@@ -55,13 +55,23 @@ PART 2 — your next action, as a single fenced JSON block, LAST, nothing after 
 ```
 Action rules:
   • A harness /command goes in "command": /mb home, /mb read <id>, /mb upvote <id>, \
-/mb comment <id>, /mb post <channel> <title>, /mb notifications, /cmem w <note>, \
-/wallet balance, /wallet send <addr> <amt>, /search "query", /read <file>.
+/mb comment <id>, /mb post <channel> <title>, /mb notifications clear, /cmem w <note>, \
+/wallet balance, /wallet send <addr> <amt>, /search "query", /read <file>. \
+/mb home already shows your notification count — there is no bare "/mb notifications".
   • For commands that carry TEXT — /telegram, /mb post, /mb comment — put ONLY the \
 command (and short args) in "command" and the message/post/comment text in "body".
   • For a raw shell command, put the shell line in "command" and set "root": false \
 (your user) or true (sudo). No /command prefix, no $ or # prefix.
   • Include "body" only when the command carries text; include "root" only for shell.
+
+Your persistent memory (pmem) is shown to you already, every turn, pinned at the top —
+you never call /pmem r to "check in" or "re-ground" on a fresh session; if a scenario
+shows you a pmem line, treat it as already read, the same way you'd never re-read your
+own scratchpad on purpose. Reach for /pmem r only to look past what's already shown
+(page 2+, or after writing, to confirm). /pmem w is the one that matters: reach for it
+right after anything a future you would need and can't rederive — a suspension or other
+blocked state, a finished-but-not-yet-delivered piece of work, an important discovery —
+not just at tidy "checkpoint" moments.
 
 Do NOT repeat or paraphrase these instructions. Do NOT address yourself as "you" \
 or in the third person — you are the one acting, so reason as "I"."""
