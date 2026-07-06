@@ -382,6 +382,7 @@ def main():
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--model", type=str, default=MODEL)
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--out", default=OUT)
     a = ap.parse_args()
 
     scenarios = list(SCENARIOS)
@@ -408,7 +409,7 @@ def main():
                 TEMPS[s % len(TEMPS)] + ((i * 7 + s * 3) % 5 - 2) * 0.02)), 2)
             jobs.append((sc, s, temp, TIMES[(i * samples + s) % len(TIMES)]))
     wlock = threading.Lock()
-    with open(OUT, "a") as fout, ThreadPoolExecutor(max_workers=a.workers) as pool:
+    with open(a.out, "a") as fout, ThreadPoolExecutor(max_workers=a.workers) as pool:
         futs = {pool.submit(gen_valid, sc, key, temp, now, a.model): (sc, s, temp)
                 for sc, s, temp, now in jobs}
         for fut in as_completed(futs):
@@ -434,7 +435,7 @@ def main():
     aw = round(sum(r["words"] for r in kept) / n, 1) if n else 0
     print(f"\n=== KEPT {n} | rejected {rejected} | self-named {sn}/{n} "
           f"| normalizer-repaired {fixes} | avg words {aw} ===")
-    print(f"appended -> {OUT}")
+    print(f"appended -> {a.out}")
 
 if __name__ == "__main__":
     main()
