@@ -24,7 +24,7 @@ import sys
 HOST     = "furrow@stt7f7qmyesgdy4tya2sq6trqhzw5b35ihwgcnvfxwkkuw2wgmxdywqd.onion"
 SSH_TOR  = ["ssh", "-o", "ProxyCommand=nc -x 127.0.0.1:9050 %h %p", HOST]
 # Home-LAN route: direct, no Tor — used only when --lan is passed.
-LAN_HOST = "furrow@GWNR71517-BL.lan"
+LAN_HOST = "furrow@192.168.18.51"
 SSH_LAN  = ["ssh", LAN_HOST]
 # Active route; main() flips this to SSH_LAN when --lan is given.
 SSH      = SSH_TOR

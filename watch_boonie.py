@@ -14,9 +14,10 @@ useful fallback when the onion path degrades (e.g. the TUF is busy).
 Usage:
     python3 watch_boonie.py           # follow latest session (over Tor onion)
     python3 watch_boonie.py --lan     # follow latest session (direct LAN, no Tor)
+    python3 watch_boonie.py --jump    # via TUF jump host → MQ-Pro RNDIS (10.55.0.1)
     python3 watch_boonie.py --list    # list available sessions
     python3 watch_boonie.py <N>       # follow Nth most recent session (1=latest)
-    (--lan combines with --list / <N>.)
+    (--lan / --jump combine with --list / <N>.)
 """
 
 import re
@@ -26,13 +27,17 @@ import sys
 from config import BOONIE_ONION
 
 # Default route: Tor onion hidden service — reachable from anywhere.
-ONION    = BOONIE_ONION
-SSH_TOR  = ["ssh", "-o", "ProxyCommand=nc -x 127.0.0.1:9050 %h %p", ONION]
+ONION     = BOONIE_ONION
+SSH_TOR   = ["ssh", "-o", "ProxyCommand=nc -x 127.0.0.1:9050 %h %p", ONION]
 # Home-LAN route: direct, no Tor — used only when --lan is passed.
-LAN_HOST = "boonie@mangopi.lan"
-SSH_LAN  = ["ssh", LAN_HOST]
-# Active route; main() flips this to SSH_LAN when --lan is given.
-SSH      = SSH_TOR
+LAN_HOST  = "boonie@192.168.18.63"   # update when avahi resolves mangopi.local again
+SSH_LAN   = ["ssh", LAN_HOST]
+# Jump route: TUF as ProxyJump → MQ-Pro via RNDIS link (10.55.0.1).
+# Useful when avahi/DNS isn't resolving but the USB-ethernet link is up.
+JUMP_HOST = "boonie@10.55.0.1"
+SSH_JUMP  = ["ssh", "-J", "foxo-tuff17.local", JUMP_HOST]
+# Active route; main() flips this when --lan or --jump is given.
+SSH       = SSH_TOR
 LOGDIR   = "ggmlagent/boonie/logs"
 
 RESET  = "\033[0m"
@@ -158,11 +163,21 @@ def main() -> None:
     global SSH
     args = sys.argv[1:]
 
-    use_lan = "--lan" in args
+    use_lan  = "--lan"  in args
+    use_jump = "--jump" in args
+    if use_lan and use_jump:
+        print("Error: --lan and --jump are mutually exclusive.", file=sys.stderr)
+        sys.exit(1)
     if use_lan:
         args = [a for a in args if a != "--lan"]
         SSH = SSH_LAN
-    route = "LAN" if use_lan else "Tor onion"
+        route = "LAN"
+    elif use_jump:
+        args = [a for a in args if a != "--jump"]
+        SSH = SSH_JUMP
+        route = "TUF jump → RNDIS"
+    else:
+        route = "Tor onion"
 
     try:
         sessions = list_sessions()
@@ -170,11 +185,14 @@ def main() -> None:
         print(f"{RED}[unreachable]{RESET} MQ-Pro not reachable over {route}: {e}",
               file=sys.stderr)
         if use_lan:
-            print(f"{DIM}On the LAN — is the MQ-Pro up? Its direct LAN is weak; "
-                  f"drop --lan to fall back to the Tor onion.{RESET}", file=sys.stderr)
+            print(f"{DIM}Is the MQ-Pro up and on 192.168.18.63? "
+                  f"Try --jump to reach it via TUF's RNDIS link instead.{RESET}", file=sys.stderr)
+        elif use_jump:
+            print(f"{DIM}Is foxo-tuff17.local reachable and the RNDIS link (10.55.0.1) up? "
+                  f"Try --lan or drop both flags for Tor onion.{RESET}", file=sys.stderr)
         else:
             print(f"{DIM}After a reboot the hidden-service descriptor can take a few "
-                  f"minutes to republish — retry shortly, or use --lan if you're home.{RESET}",
+                  f"minutes to republish — retry shortly, or use --jump if you're home.{RESET}",
                   file=sys.stderr)
         sys.exit(2)
 
