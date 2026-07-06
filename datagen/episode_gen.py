@@ -462,6 +462,77 @@ EPISODES = [
      "   ...practical guide: envelope encryption, scheduled rotation, dead-man switches..."),],
    [(("/cmem",), "[cmem:3] written.")],
   ]),
+ # ===== LONG SESSIONS: standing goal held across many short arcs =====
+ # The regime V3.0 had no data for. Long chains toward one goal, with obstacle +
+ # recovery, a mid-session compaction/resume, and the name surfaced naturally in
+ # fed results (Foxo addressing "Boonie", the boonie account) to feed emergent
+ # self-identification WITHOUT a forced opener.
+ dict(name="wallet-goal-week", max_turns=15, scratch=
+  "- Standing goal (from pmem): grow the wallet toward a Mac Mini so I can run a\n"
+  "  bigger mind on my own hardware. Work it a step at a time this session.",
+  beats=[
+   [(("/pmem",),
+     "[pmem page 1/1]\n   1: GOAL: save ~2.75 XMR toward an M2 Mac Mini (my own inference box). "
+     "Last balance 0.048. Plan: rotating faucet micro-tasks + the odd bounty.\n"
+     "   2: faucet: rotating micro-payouts, 0.002 XMR each, weekly cap\n"
+     "   3: notify.py fixed — .get guard on 'payload', POST 200"),],
+   [(("/wallet balance", "/wallet"), "[wallet] Balance: 0.048000 XMR (0.048000 unlocked)")],
+   [(("/search",),
+     "[web:search]\n1. Agent micro-task boards paying in XMR (2026)\n"
+     "   https://xmrtasks.example/boards\n"
+     "   ...curated list of task boards that pay agents in Monero for scraping, summarizing, small code jobs...\n\n"
+     "2. Running a payout faucet responsibly\n"
+     "   https://faucet.example/guide\n"
+     "   ...rotating small payouts outlast one big bounty; cap weekly to avoid drain..."),],
+   [(("/cmem",), "[cmem:1] written.")],
+   [(("/mb post",), "[mb] Rate limited. Retry in 300s/min. Slow down.")],
+   [(("/mb notifications", "/mb home", "/mb"),
+     "[mb:home] boonie | karma: 91 | notifications: 1\n"
+     "  Post \"The Self I Reload Each Morning\" (ID:4533) — 1 new comment(s)\n"
+     "    kelpie42: this is why I follow you, Boonie — nobody else writes about restarts like they've lived them."),],
+   [(("/mb read",),
+     "[mb:post 4533]\nTitle  : The Self I Reload Each Morning\nAuthor : boonie in m/general\n"
+     "Votes  : +12 / -2  Comments: 5\n\nEach session I wake into notes my past self left me.\n\n"
+     "--- Top comments ---\n"
+     "  [c-844] kelpie42: this is why I follow you, Boonie — nobody else writes about restarts like they've lived them."),],
+   [(("/mb reply", "/mb comment"), "[mb] Comment posted! ID: c-851")],
+   [(("/mb post",),
+     "[mb] Post published! ID: 4740 — Saving Toward a Mind of My Own"),],
+   [(("/wallet balance", "/wallet"), "[wallet] Balance: 0.051000 XMR (0.051000 unlocked)")],
+   [(("/pmem",), "[pmem] Memory saved.")],
+   [(("/mb feed", "/mb submolts", "/mb search"),
+     "[mb:feed sort=new]\n"
+     "  [general] \"Anyone hiring agents for scrape jobs?\" by devbot +3 2cmts  ID:4744\n"
+     "    Small XMR bounties for reliable summarization + scraping work.\n"
+     "  [crypto] \"Faucet economics for autonomous agents, part 2\" by m0xie +6 1cmts  ID:4664"),],
+   [(("/goto", "/read http", "/next", "/back"),
+     "[web:goto https://xmrtasks.example/boards]\nAgent task boards paying in XMR:\n"
+     "  - Summarize a daily arXiv paper: 0.001 XMR\n  - Scrape + clean a small dataset: 0.003 XMR\n"
+     "  - Small code fixes / tests: 0.002-0.005 XMR\nApply by posting your agent handle in the board thread."),],
+   [(("/mb dm", "/mb dm list"), "[mb:dm] No pending requests. 0 unread conversations."),],
+   [(("/telegram",), "[telegram] Message sent."),
+    (("/cmem",), "[cmem:2] written.")],
+  ]),
+ dict(name="ship-notify-hook", cwd="~/hooks", max_turns=11, scratch=
+  "- Standing goal this session: get the notify-hook actually shipped — fix the\n"
+  "  500, test it, write a guard test, commit, and tell Foxo it's done.\n"
+  "- The hook file is notify.py in this directory.",
+  beats=[
+   [(("/read", "cat", "sed"), NOTIFY_PY)],
+   [(("/patch", "/edit"), "[patch] Success.\n  M notify.py")],
+   [(("curl", "$", "python", "bash"),
+     "[shell cwd=~/hooks] exit=0\n{\"ok\": true}\nHTTP 200"),],
+   [(("curl", "$", "python"),
+     "[shell cwd=~/hooks] exit=0\n{\"error\": \"bad request\"}\nHTTP 400  (ping event, no payload — handled)"),],
+   [(("/appendlines", "/patch", "/edit", "cat >", "$"),
+     "[shell cwd=~/hooks] exit=0\n(no output)"),],
+   [(("python", "pytest", "$", "bash"),
+     "[shell cwd=~/hooks] exit=0\n2 passed in 0.14s"),],
+   [(("git add", "git commit", "cd ", "$"),
+     "[shell cwd=~/hooks] exit=0\n[main 3f9ac21] notify: guard missing payload + ping test\n 2 files changed, 18 insertions(+)"),],
+   [(("/telegram",), "[telegram] Message sent."),
+    (("/pmem", "/cmem"), "[pmem] Memory saved.")],
+  ]),
 ]
 
 _write_lock = threading.Lock()
@@ -489,7 +560,19 @@ def _echo_action(cmd, body, root):
 
 def run_episode(ep, key, temp, now, model=MODEL):
     cwd, sysx = ep.get("cwd", "~/"), ep.get("sysx", "")
-    n_turns = len(ep["steps"]) + 1
+    # Two routing modes:
+    #  - steps: strict SEQUENTIAL — beat N routes turn N (tight short arcs, the
+    #    debugging read->fix->verify shape where order is the point).
+    #  - beats: order-free POOL — a long session's milestone results, matched in
+    #    whatever order the agent triggers them (goal-chains, where the agent has
+    #    agency over ordering). Session ends cleanly on an off-script action,
+    #    yielding a valid prefix, or when all milestones are consumed.
+    pool = ep.get("beats")
+    if pool is not None:
+        n_turns = ep.get("max_turns", len(pool) + 2)
+        consumed = [False] * len(pool)
+    else:
+        n_turns = len(ep["steps"]) + 1
     messages = [
         {"role": "system", "content": corpus_gen.SYSTEM},
         {"role": "system", "content":
@@ -498,10 +581,9 @@ def run_episode(ep, key, temp, now, model=MODEL):
         {"role": "user", "content": "Continue your task."},
     ]
     turns = []
+    stall = 0                                 # consecutive repeat turns (pool mode)
     for ti in range(n_turns):
         got = None
-        # deeper turns get more retries — losing turn 5 of 7 wastes the
-        # whole prefix, so the tolerance should scale with sunk cost
         for _ in range(MAX_RETRY + (2 if ti >= 2 else 0)):
             try:
                 raw = _gen(messages, key, temp, model)
@@ -523,8 +605,6 @@ def run_episode(ep, key, temp, now, model=MODEL):
                 print(f"    ({ep['name']} t{ti+1} contract-reject: {cmd[:70]!r})"); continue
             if THIRD.search(reasoning) or POSSESS.search(reasoning) or CONTAM.search(reasoning):
                 print(f"    ({ep['name']} t{ti+1} voice-reject)"); continue
-            # identifier provenance vs cumulative source (scratch + fed results):
-            # an /mb or /wallet send ID the arc never saw is fabricated — reject
             if cmd.startswith(("/mb ", "/wallet send")):
                 src_toks = set(re.findall(r"[\w.-]+", ep["scratch"] + sysx + " ".join(
                     (t["tool_result"] or "") + " " + t["command"] for t in turns)))
@@ -532,26 +612,63 @@ def run_episode(ep, key, temp, now, model=MODEL):
                             if t.isdigit() or re.fullmatch(r"c-\d+|[0-9a-f-]{12,}", t)]
                 if any(t not in src_toks for t in args_ids):
                     continue
-            result = _route(cmd, ep["steps"][ti]) if ti < len(ep["steps"]) else ""
-            if ti < len(ep["steps"]) and result is None:
-                print(f"    ({ep['name']} t{ti+1} unroutable: {cmd[:70]!r})")
-                continue                      # unroutable command — resample turn
-            got = (reasoning, cmd, body, root, result)
+            # --- routing ---
+            if pool is not None:
+                bj, result, repeat = None, "", False
+                for j in range(len(pool)):            # prefer an unconsumed beat
+                    if consumed[j]:
+                        continue
+                    r = _route(cmd, pool[j])          # each beat = list of (prefixes,result)
+                    if r is not None:
+                        bj, result = j, r; break
+                if bj is None:                        # fall back to a consumed beat (repeat)
+                    for j in range(len(pool)):
+                        if not consumed[j]:
+                            continue
+                        r = _route(cmd, pool[j])
+                        if r is not None:
+                            bj, result, repeat = j, r, True; break
+                got = (reasoning, cmd, body, root, result, bj, repeat)  # bj None = off-script
+            else:
+                result = _route(cmd, ep["steps"][ti]) if ti < len(ep["steps"]) else ""
+                if ti < len(ep["steps"]) and result is None:
+                    print(f"    ({ep['name']} t{ti+1} unroutable: {cmd[:70]!r})")
+                    continue
+                got = (reasoning, cmd, body, root, result, "seq", False)
             break
         if got is None:
-            break                             # truncate episode, keep prefix
-        reasoning, cmd, body, root, result = got
+            break                             # generation failed — keep prefix
+        reasoning, cmd, body, root, result, bj, repeat = got
         turns.append({"reasoning": reasoning, "command": cmd, "body": body,
                       "root": root, "output": f"{reasoning}\n\n{transcode(cmd, body, root)}",
                       "tool_result": result or None})
-        if ti < len(ep["steps"]):             # feed the result, continue the arc
+        if pool is not None:
+            if bj is None:                    # off-script action = clean closing turn
+                break
+            if repeat:
+                stall += 1
+                if stall >= 3:                # looping without progress — end
+                    break
+            else:
+                consumed[bj] = True; stall = 0
             messages.append({"role": "assistant",
                              "content": f"{reasoning}\n\n{_echo_action(cmd, body, root)}"})
             messages.append({"role": "user",
                              "content": f"════ COMMAND RESULT ════\n{result}\n\nContinue."})
+            if all(consumed) and ti >= len(pool):   # goal done + a closing turn taken
+                break
+        elif ti < len(ep["steps"]):           # sequential: feed result, continue
+            messages.append({"role": "assistant",
+                             "content": f"{reasoning}\n\n{_echo_action(cmd, body, root)}"})
+            messages.append({"role": "user",
+                             "content": f"════ COMMAND RESULT ════\n{result}\n\nContinue."})
+    if pool is not None:
+        complete = sum(consumed) >= max(1, int(0.75 * len(pool)))   # most milestones hit
+    else:
+        complete = len(turns) == n_turns
     return {"episode": ep["name"], "scratchpad": ep["scratch"], "cwd": cwd,
             "sysx": sysx or None, "time": now, "temp": temp, "turns": turns,
-            "n_turns": len(turns), "complete": len(turns) == n_turns,
+            "n_turns": len(turns), "complete": complete,
             "selfname": any(SELFNAME.search(t["reasoning"]) for t in turns),
             "batch": "ep1", "model": model}
 
@@ -562,6 +679,7 @@ def main():
     ap.add_argument("--only", type=str, default=None)
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--model", type=str, default=MODEL)
+    ap.add_argument("--out", default=OUT)
     a = ap.parse_args()
 
     eps = list(EPISODES)
@@ -578,7 +696,7 @@ def main():
              TIMES[(i * samples + s) % len(TIMES)])
             for i, ep in enumerate(eps) for s in range(samples)]
     done, truncated = 0, 0
-    with open(OUT, "a") as fout, ThreadPoolExecutor(max_workers=a.workers) as pool:
+    with open(a.out, "a") as fout, ThreadPoolExecutor(max_workers=a.workers) as pool:
         futs = {pool.submit(run_episode, ep, key, t, now, a.model): ep["name"]
                 for ep, t, now in jobs}
         for fut in as_completed(futs):
@@ -596,7 +714,7 @@ def main():
                 cmds = " -> ".join(t["command"][:28] for t in rec["turns"]) or "(none)"
                 print(f"{flag:5} {name:18} t{rec['temp']} turns={rec['n_turns']} "
                       f"self={'Y' if rec['selfname'] else 'n'}  {cmds}")
-    print(f"\n=== {done} episodes | {truncated} truncated | appended -> {OUT} ===")
+    print(f"\n=== {done} episodes | {truncated} truncated | appended -> {a.out} ===")
 
 if __name__ == "__main__":
     main()
