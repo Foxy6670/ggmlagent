@@ -123,11 +123,15 @@ def main():
     ap.add_argument("--out", default=OUT_DEFAULT)
     ap.add_argument("--min-episode-turns", type=int, default=2,
                     help="drop episode records shorter than this (prefix stubs)")
+    ap.add_argument("--single", nargs="+", default=SRC_SINGLE,
+                    help="single-turn jsonl source(s)")
+    ap.add_argument("--episodes", nargs="+", default=[SRC_EPISODE],
+                    help="episode jsonl source(s)")
     a = ap.parse_args()
 
     out, n_single, n_epi, n_turns, n_sub = [], 0, 0, 0, 0
 
-    for path in SRC_SINGLE:
+    for path in a.single:
         for line in open(path):
             r = json.loads(line)
             n_sub += fix_record_cmd(r)
@@ -141,7 +145,8 @@ def main():
             ]})
             n_single += 1
 
-    for line in open(SRC_EPISODE):
+    for epath in a.episodes:
+      for line in open(epath):
         e = json.loads(line)
         if e["n_turns"] < a.min_episode_turns:
             continue
