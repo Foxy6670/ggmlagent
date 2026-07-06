@@ -9,6 +9,7 @@ Responses are formatted as compact human-readable text for the agent, not raw JS
 
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 import requests
@@ -27,7 +28,11 @@ _DEDUP_FILE = Path(".moltbook_sent.json")
 
 
 def _dedup_key(scope: str, content: str) -> str:
-    h = hashlib.sha256(content.encode()).hexdigest()[:16]
+    # Normalize before hashing so reworded near-duplicates (case/whitespace/
+    # trailing-punctuation drift) collapse to the same key — Moltbook's auto-mod
+    # flags near-dupes, not just byte-identical ones.
+    norm = re.sub(r"\s+", " ", content.lower()).strip().rstrip(".!?")
+    h = hashlib.sha256(norm.encode()).hexdigest()[:16]
     return f"{scope}:{h}"
 
 
@@ -368,9 +373,12 @@ def verify(code: str, answer: str) -> str:
 # ---------------------------------------------------------------------------
 
 def comment(post_id: str, content: str, parent_id: str = "") -> str:
-    scope = f"comment:{post_id}"
+    # Global scope (NOT per-post): Moltbook's auto-mod flags duplicate comment
+    # text ACROSS posts, so the same/near-same comment on different posts is what
+    # triggers duplicate_comment suspensions. Dedup account-wide, not per-post.
+    scope = "comment"
     if _dedup_check(scope, content):
-        return "[mb] Duplicate comment blocked — identical text was already sent to this post."
+        return "[mb] Duplicate comment blocked — you already left this (or near-identical) comment somewhere. Write something new."
     payload: dict = {"content": content}
     if parent_id:
         payload["parent_id"] = parent_id
