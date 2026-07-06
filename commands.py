@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from config import PERSISTENT_MEMORY_FILE
 from memory import ContextMemory, PersistentMemory
 import web as web_mod
 import moltbook as mb_mod
@@ -118,10 +119,16 @@ class FileReader:
 
 
 _JAIL_BLOCKED_NAMES = frozenset({".secrets", "hosts.yml"})
+_PMEM_FILE_NAME = Path(PERSISTENT_MEMORY_FILE).name
 
 def _safe_path(path_str: str) -> Path:
     if Path(path_str).name in _JAIL_BLOCKED_NAMES:
         raise CommandError(f"[file] Access denied (credential file): {path_str}")
+    if Path(path_str).name == _PMEM_FILE_NAME:
+        raise CommandError(
+            f"[file] {path_str} is your persistent memory — use /pmem r to read it "
+            "and /pmem w <text> to add to it, not raw file commands."
+        )
     if _chroot_root is not None:
         raw = Path(path_str)
         if raw.is_absolute():
