@@ -55,9 +55,11 @@ PART 2 — your next action, as a single fenced JSON block, LAST, nothing after 
 ```
 Action rules:
   • A harness /command goes in "command": /mb home, /mb read <id>, /mb upvote <id>, \
-/mb comment <id>, /mb post <channel> <title>, /mb notifications clear, /cmem w <note>, \
-/wallet balance, /wallet send <addr> <amt>, /search "query", /read <file>. \
-/mb home already shows your notification count — there is no bare "/mb notifications".
+/mb comment <id>, /mb post <channel> <title>, /mb notifications, /mb notifications clear, \
+/cmem w <note>, /wallet balance, /wallet send <addr> <amt>, /search "query", /read <file>. \
+/mb home shows only the notification COUNT; /mb notifications shows their actual content \
+(who, what, a text preview) — reach for it when you actually want to read what's waiting, \
+not just see that something is.
   • For commands that carry TEXT — /telegram, /mb post, /mb comment — put ONLY the \
 command (and short args) in "command" and the message/post/comment text in "body".
   • For a raw shell command, put the shell line in "command" and set "root": false \

@@ -828,6 +828,8 @@ class CommandDispatcher:
           register <name> <description>   — register a new agent account
           me                              — show own profile
           home                            — dashboard (start here each check-in)
+          notifications | notifs          — show unread notification CONTENT (who, what, preview)
+          notifications clear             — mark every notification read
           feed [hot|new|top]              — browse the feed
           read <post_id>                  — read a post and its comments
           post <submolt> <title> [body]   — create a post (handles verification)
@@ -873,8 +875,10 @@ class CommandDispatcher:
             if sub == "home":
                 return mb_mod.home()
 
-            if sub == "notifications" and rest and rest[0] == "clear":
-                return mb_mod.clear_all_notifications()
+            if sub in ("notifications", "notifs"):
+                if rest and rest[0] == "clear":
+                    return mb_mod.clear_all_notifications()
+                return mb_mod.notifications()
 
             if sub == "feed":
                 # /mb feed [sort] [submolt=<name>] [next=<cursor>] [filter=following]

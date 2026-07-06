@@ -258,6 +258,79 @@ def _clear_notifications_for_post(post_id: str) -> None:
         pass
 
 
+_MAX_AUTHOR_LOOKUPS = 6  # cap extra /posts/{id}/comments round-trips per call
+
+
+def _find_comment(comments: list, comment_id: str) -> dict | None:
+    for c in comments:
+        if c.get("id") == comment_id:
+            return c
+        found = _find_comment(c.get("replies", []) or [], comment_id)
+        if found:
+            return found
+    return None
+
+
+def notifications(unread_only: bool = True, limit: int = 10) -> str:
+    """
+    Show notification CONTENT — who did what, and (for comments/replies/mentions)
+    a preview of the actual text — not just the count /mb home gives.
+    Read-only: does not mark anything read (use /mb notifications clear for that).
+    """
+    data  = _call("GET", "/notifications")
+    items = data.get("notifications", [])
+    if unread_only:
+        items = [n for n in items if not n.get("isRead")]
+    if not items:
+        kind = "unread " if unread_only else ""
+        return f"[mb:notifications] No {kind}notifications."
+    items = items[:limit]
+    lines = [f"[mb:notifications] {len(items)} shown" + (" (unread)" if unread_only else "")]
+
+    post_comments_cache: dict[str, list] = {}
+    lookups_left = _MAX_AUTHOR_LOOKUPS
+    for n in items:
+        ntype   = n.get("type", "?")
+        content = n.get("content", "")
+        post    = n.get("post") or {}
+        comment = n.get("comment") or {}
+        post_id = n.get("relatedPostId", "")
+        cmt_id  = n.get("relatedCommentId", "")
+        mark    = " " if n.get("isRead") else "*"
+
+        header = f"  {mark}[{ntype}] {content}"
+        if post.get("title"):
+            header += f' — "{post["title"]}" (post:{post_id})'
+        lines.append(header)
+
+        if comment.get("content"):
+            author = None
+            if post_id and cmt_id:
+                if post_id not in post_comments_cache and lookups_left > 0:
+                    try:
+                        post_comments_cache[post_id] = _call(
+                            "GET", f"/posts/{post_id}/comments",
+                            params={"sort": "new", "limit": 50},
+                        ).get("comments", [])
+                    except Exception:
+                        post_comments_cache[post_id] = []
+                    lookups_left -= 1
+                found = _find_comment(post_comments_cache.get(post_id, []), cmt_id)
+                if found:
+                    author = found.get("author", {}).get("name")
+            body = comment["content"].replace("\n", " ")
+            if len(body) > 200:
+                body = body[:200] + "…"
+            who = f"{author}: " if author else ""
+            lines.append(f"      {who}{body}")
+
+        if post_id:
+            reply_hint = f"  |  /mb reply {post_id} {cmt_id} <text>" if cmt_id else ""
+            lines.append(f"      → /mb read {post_id}{reply_hint}")
+
+    return _trunc("\n".join(lines))
+
+
 def clear_all_notifications() -> str:
     """Mark every unread notification as read. Returns a summary."""
     import time

@@ -36,9 +36,9 @@ OUT = os.path.join(_DIR, "data", "corpus_v2.jsonl")
 # model improvised shell heredocs for those intents (seen in smoke). Expand the
 # command list to the real harness surface (syntax verified against commands.py).
 SYSTEM = SYSTEM.replace(
-    "/mb post <channel> <title>, /mb notifications clear, /cmem w <note>, ",
+    "/mb post <channel> <title>, /mb notifications, /mb notifications clear, /cmem w <note>, ",
     "/mb post <channel> <title>, /mb reply <post_id> <comment_id>, "
-    "/mb notifications clear, /mb dm list, /mb dm read <conv_id>, /mb dm approve "
+    "/mb notifications, /mb notifications clear, /mb dm list, /mb dm read <conv_id>, /mb dm approve "
     "<conv_id>, /mb dm reject <conv_id>, /mb dm send <conv_id> <message>, "
     "/cmem w <note>, /pmem w <note> "
     "(persistent memory — survives restarts and compaction, keep it under "
