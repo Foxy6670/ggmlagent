@@ -56,6 +56,18 @@ EPOCHS      = 2              # ~1k samples; watch loss — epoch-1 ckpt often th
                              # deploy (V3.0 overfit slightly by epoch 2)
 LR          = 2e-4
 
+# Optional: push the GGUF straight to a HF Hub repo instead of (or alongside)
+# saving locally. Point of this: downloading a 15-20GB export to the TUF over
+# a home connection takes 10+ minutes of billed Colab compute for zero GPU
+# work. Pushing to HF is datacenter-to-datacenter (fast, usually ~1-2 min),
+# so you disconnect Colab right after the push and pull down to the TUF at
+# your own pace afterward, at zero ongoing compute cost.
+#   HF_PUSH_REPO=Foxy6670/boonie-v3-2-gguf python train_boonie_v3.py
+# Needs HF_TOKEN set (Colab: use the Secrets panel, or huggingface_hub.login()
+# beforehand) with write access. Leave HF_PUSH_REPO unset to skip entirely --
+# default behavior (local save only) is unchanged.
+HF_PUSH_REPO = os.environ.get("HF_PUSH_REPO", "")
+
 # ─── load base + attach LoRA ───────────────────────────────────────────
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name     = MODEL,
@@ -198,3 +210,11 @@ print("[export] producing GGUF Q8_0 + Q6_K for KoboldCPP…")
 model.save_pretrained_gguf(f"{OUTPUT}/gguf", tokenizer,
                            quantization_method=["q8_0", "q6_k"])
 print(f"[done] GGUFs at {OUTPUT}/gguf/")
+
+if HF_PUSH_REPO:
+    print(f"[export] pushing GGUF to hf.co/{HF_PUSH_REPO} …")
+    model.push_to_hub_gguf(HF_PUSH_REPO, tokenizer,
+                            quantization_method=["q8_0", "q6_k"])
+    print(f"[done] pushed to https://huggingface.co/{HF_PUSH_REPO} — "
+          f"safe to disconnect this Colab session now; pull down to the TUF "
+          f"with: huggingface-cli download {HF_PUSH_REPO} --local-dir <dir>")
