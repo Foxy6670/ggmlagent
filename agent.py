@@ -21,6 +21,7 @@ Stream loop per turn:
 
 import json
 import re
+import select
 import sys
 import time
 from datetime import datetime
@@ -99,8 +100,10 @@ class Agent:
         monero: bool = False,
         simulate: bool = False,
         chroot: str = "",
+        discuss: bool = False,
     ):
         self._frwx     = frwx
+        self._discuss  = discuss
         self._chroot   = chroot
         if _cfg.OPENROUTER_API_KEY:
             from openrouter_client import OpenRouterClient
@@ -287,22 +290,37 @@ class Agent:
     def _wait_for_input(self) -> None:
         """
         Block here (no KCPP calls, no compute spent) after /pause, until a
-        new Telegram message arrives or _PAUSE_MAX_SECS elapses as a safety
-        net. Messages found are pushed into _pending_tg directly, same as
-        _step()'s own drain_inbox() call -- _step() will find nothing left
-        to drain when it runs next, so nothing is double-counted or lost.
+        new Telegram message arrives, someone types a line at an attached
+        terminal, or _PAUSE_MAX_SECS elapses as a safety net. Either source
+        is pushed into _pending_tg directly, same as _step()'s own
+        drain_inbox() call -- _step() will find nothing left to drain when
+        it runs next, so nothing is double-counted or lost.
+
+        Terminal input only works when stdin is a real attached tty (e.g.
+        someone SSH'd in and left the session open) -- under the normal
+        supervisor (boonie.sh), stdin isn't a tty, and select() on a closed/
+        redirected stdin returns "ready" instantly on EOF, which would spin
+        this loop with zero delay. isatty() gates that off cleanly; a
+        non-interactive run just falls back to the original Telegram-only
+        polling.
         """
-        if self._tg is None:
+        watch_stdin = sys.stdin.isatty()
+        if self._tg is None and not watch_stdin:
             # Nothing could ever wake this up -- don't actually pause.
-            self._log.system("Ignored /pause: Telegram isn't enabled, nothing to wait on.")
+            self._log.system("Ignored /pause: no Telegram and no attached terminal -- nothing to wait on.")
             self._paused_until_input = False
             return
 
-        self._log.system("Paused — waiting for a Telegram message (or safety-net timeout).")
-        print(f"\n{_YELLOW}[agent] Paused — waiting for input.{_RESET}", flush=True)
+        via = ", ".join(filter(None, ["Telegram" if self._tg else None,
+                                       "terminal" if watch_stdin else None]))
+        self._log.system(f"Paused — waiting for input via {via} (or safety-net timeout).")
+        print(f"\n{_YELLOW}[agent] Paused — waiting for input via {via}.{_RESET}", flush=True)
+        if watch_stdin:
+            print(f"{_YELLOW}[agent] Type a line and press Enter to resume.{_RESET}", flush=True)
+
         waited = 0.0
         while self._paused_until_input:
-            msgs = self._tg.drain_inbox()
+            msgs = self._tg.drain_inbox() if self._tg else []
             if msgs:
                 for m in msgs:
                     obs = f"[{m.get('from', 'Foxo')} @ Telegram]: {m.get('text', '')}"
@@ -310,13 +328,30 @@ class Agent:
                     self._log.observation(obs)
                     self._pending_tg.append(obs)
                 self._paused_until_input = False
-                self._log.system(f"Resumed after {waited:.0f}s paused — message arrived.")
+                self._log.system(f"Resumed after {waited:.0f}s paused — Telegram message arrived.")
                 return
+
+            if watch_stdin:
+                ready, _, _ = select.select([sys.stdin], [], [], _PAUSE_POLL_SECS)
+                if ready:
+                    line = sys.stdin.readline()
+                    if line.strip():
+                        obs = f"[Foxo @ terminal]: {line.strip()}"
+                        print(f"\n{_GREEN}[terminal]{_RESET} {obs}", flush=True)
+                        self._log.observation(obs)
+                        self._pending_tg.append(obs)
+                        self._paused_until_input = False
+                        self._log.system(f"Resumed after {waited:.0f}s paused — terminal input.")
+                        return
+                    # Blank line or EOF on a real tty (e.g. stray Enter) --
+                    # not a deliberate wake, keep waiting.
+            else:
+                time.sleep(_PAUSE_POLL_SECS)
+
             if waited >= _PAUSE_MAX_SECS:
                 self._paused_until_input = False
                 self._log.system(f"Resumed after {waited:.0f}s paused — safety-net timeout, nothing arrived.")
                 return
-            time.sleep(_PAUSE_POLL_SECS)
             waited += _PAUSE_POLL_SECS
 
     # ------------------------------------------------------------------
@@ -841,9 +876,26 @@ class Agent:
         else:
             shell_section = ""
 
+        if self._discuss:
+            discuss_section = (
+                "\n\n════════════════════════════════════════\n"
+                "DISCUSSION MODE\n"
+                "Foxo wants a direct back-and-forth right now, not autonomous\n"
+                "operation. After you've said something substantive — answered\n"
+                "a question, given an opinion, finished a thought worth a real\n"
+                "reply — use /pause instead of continuing on your own. That's\n"
+                "not giving up or getting stuck; it's handing the turn back\n"
+                "on purpose. /pause costs nothing and waits for Foxo's actual\n"
+                "reply before you continue.\n"
+                "════════════════════════════════════════"
+            )
+        else:
+            discuss_section = ""
+
         system_content = (
             SYSTEM_PROMPT
             + shell_section
+            + discuss_section
             + f"\n\n════════════════════════════════════════\n"
             f"Your task is in {TASK_FILE}. Read it first with /read {TASK_FILE}.\n"
             f"════════════════════════════════════════"

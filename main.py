@@ -60,6 +60,14 @@ def main():
         help="Dry-run mode — Moltbook writes and Telegram (in/out) are intercepted "
              "and synthesized; reads, files, and web stay real. Auto-on with --teleop.",
     )
+    parser.add_argument(
+        "--discuss",
+        action="store_true",
+        help="Discussion mode — nudges the model to /pause and wait for a reply "
+             "after answering something substantive, instead of continuing "
+             "autonomously. /pause itself works regardless of this flag; this "
+             "just changes how readily the model reaches for it.",
+    )
     args = parser.parse_args()
     # Teleop implies simulate so dry-run scenarios don't commit real social actions.
     simulate = args.simulate or args.teleop
@@ -142,6 +150,7 @@ def main():
             monero=args.monero,
             simulate=simulate,
             chroot=args.chroot,
+            discuss=args.discuss,
         )
         if args.teleop:
             agent.run_teleop()
