@@ -22,6 +22,8 @@ import re
 import sys
 from pathlib import Path
 
+from redact import redact
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -135,6 +137,13 @@ def curate_messages(messages: list[dict]) -> tuple[list[dict] | None, dict]:
 
     # Flush any trailing user messages
     out.extend(pending_users)
+
+    # Redact every role uniformly, once, at the end -- catches secrets
+    # regardless of which branch above appended a given message (system,
+    # user/telegram, tool/pmem, assistant), rather than patching each
+    # append site individually and risking missing one.
+    for m in out:
+        m["content"] = redact(m["content"])
 
     # Count good assistant turns in output
     good = sum(1 for m in out if m["role"] == "assistant")

@@ -19,6 +19,8 @@ import json
 import sys
 from pathlib import Path
 
+from redact import redact
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -52,6 +54,11 @@ def main():
                 print(f"Skip {p}: {e}", file=sys.stderr)
                 continue
             msgs = obj.get("messages", [])
+            # Redact here too, defensively -- curate_training_data.py already
+            # does this, but this script can also run directly against raw
+            # .train.jsonl (uncurated), so don't rely on that step happening.
+            for m in msgs:
+                m["content"] = redact(m["content"])
             # count assistant turns as a proxy for training signal
             turns = sum(1 for m in msgs if m["role"] == "assistant")
             out.write(json.dumps(obj, ensure_ascii=False) + "\n")
