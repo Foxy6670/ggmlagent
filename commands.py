@@ -460,6 +460,7 @@ class CommandDispatcher:
         if cmd == "/mb":           return self._mb(args)
         if cmd == "/telegram":     return self._telegram(args)
         if cmd == "/wallet":       return self._wallet(args)
+        if cmd == "/pause":        return self._pause(args)
 
         return f"[error] Unknown command: {cmd}"
 
@@ -1057,6 +1058,20 @@ class CommandDispatcher:
         self._last_tg_time = time.time()
         return result
 
+    def _pause(self, args: list[str]) -> str:
+        """
+        /pause — stop generating turns until a new Telegram message arrives.
+
+        Use when there's genuinely nothing to do right now and you're just
+        waiting on a person, not to duck a hard problem. The harness (not
+        this handler) does the actual waiting -- see agent.py's run loop.
+        """
+        return (
+            "[pause] Waiting for new input before continuing. "
+            "The next turn starts when a Telegram message arrives "
+            "(or after a few hours regardless, as a safety net)."
+        )
+
     # -----------------------------------------------------------------------
     # Monero wallet
     # -----------------------------------------------------------------------
@@ -1224,7 +1239,7 @@ def _int_arg(args: list[str], idx: int, usage: str) -> int:
 
 
 _COMMAND_RE = re.compile(
-    r"^/(cmem|cm|pmem|pm|pgup|pgdown|dir|read|append|appendlines|edit|patch|dellines|del|search|goto|next|back|mb|telegram|wallet|bg|fg|jobs)\b",
+    r"^/(cmem|cm|pmem|pm|pgup|pgdown|dir|read|append|appendlines|edit|patch|dellines|del|search|goto|next|back|mb|telegram|wallet|bg|fg|jobs|pause)\b",
     re.IGNORECASE,
 )
 

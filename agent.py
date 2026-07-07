@@ -45,6 +45,9 @@ _GREEN  = "\033[32m"
 _YELLOW = "\033[33m"
 _RED    = "\033[31m"
 
+_PAUSE_POLL_SECS  = 10          # how often to check the Telegram inbox while paused
+_PAUSE_MAX_SECS   = 4 * 3600    # safety net: resume anyway after this long with nothing
+
 _TRIM_HEADROOM        = MAX_RESPONSE_TOKENS
 _COMPACT_THRESHOLD_PCT = 85   # compact at this % of the *usable* budget
                               # (N_CTX − response headroom).  Must be < 100 so the
@@ -140,6 +143,7 @@ class Agent:
         # (e.g. when chat_stream times out mid-prompt-eval) before re-issuing.
         self._last_genkey:    str | None = None
         self._last_ctx_pct:   int       = 0    # context % used, updated each turn
+        self._paused_until_input: bool  = False  # set by /pause; run() blocks on it
 
         # When simulating, the sim doubles as the TG handler so drain_inbox()
         # below pulls operator-injected messages instead of polling Tor.
@@ -224,6 +228,8 @@ class Agent:
         MAX_FAILURES = 10
         try:
             while True:
+                if self._paused_until_input:
+                    self._wait_for_input()
                 err = None
                 kind = None
                 try:
@@ -277,6 +283,41 @@ class Agent:
             self._save_training_data()
             self._log.close()
         sys.exit(0)
+
+    def _wait_for_input(self) -> None:
+        """
+        Block here (no KCPP calls, no compute spent) after /pause, until a
+        new Telegram message arrives or _PAUSE_MAX_SECS elapses as a safety
+        net. Messages found are pushed into _pending_tg directly, same as
+        _step()'s own drain_inbox() call -- _step() will find nothing left
+        to drain when it runs next, so nothing is double-counted or lost.
+        """
+        if self._tg is None:
+            # Nothing could ever wake this up -- don't actually pause.
+            self._log.system("Ignored /pause: Telegram isn't enabled, nothing to wait on.")
+            self._paused_until_input = False
+            return
+
+        self._log.system("Paused — waiting for a Telegram message (or safety-net timeout).")
+        print(f"\n{_YELLOW}[agent] Paused — waiting for input.{_RESET}", flush=True)
+        waited = 0.0
+        while self._paused_until_input:
+            msgs = self._tg.drain_inbox()
+            if msgs:
+                for m in msgs:
+                    obs = f"[{m.get('from', 'Foxo')} @ Telegram]: {m.get('text', '')}"
+                    print(f"\n{_GREEN}[telegram]{_RESET} {obs}", flush=True)
+                    self._log.observation(obs)
+                    self._pending_tg.append(obs)
+                self._paused_until_input = False
+                self._log.system(f"Resumed after {waited:.0f}s paused — message arrived.")
+                return
+            if waited >= _PAUSE_MAX_SECS:
+                self._paused_until_input = False
+                self._log.system(f"Resumed after {waited:.0f}s paused — safety-net timeout, nothing arrived.")
+                return
+            time.sleep(_PAUSE_POLL_SECS)
+            waited += _PAUSE_POLL_SECS
 
     # ------------------------------------------------------------------
     # One agent turn
@@ -429,6 +470,8 @@ class Agent:
             if command.lower().startswith("/telegram"):
                 self._pending_tg.clear()
                 self._unreplied_tg = 0   # a reply clears the unreplied backlog
+            if command.lower() == "/pause":
+                self._paused_until_input = True
             self._record_obs(turn, command, result, command=True)
             return
 
