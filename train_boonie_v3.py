@@ -24,7 +24,7 @@ Before running:
 
 Output:
   <OUTPUT>/lora/   — LoRA adapter (~150 MB checkpoint)
-  <OUTPUT>/gguf/   — Q5_K_M GGUF for KoboldCPP on the TUF (~6.5 GB)
+  <OUTPUT>/gguf/   — Q6_K GGUF for KoboldCPP on the TUF (~6.5 GB)
 """
 
 import os
@@ -189,9 +189,12 @@ import shutil, os as _os
 shutil.rmtree(_os.path.expanduser("~/.cache/huggingface"), ignore_errors=True)
 print("[export] HF cache purged for disk headroom")
 
-# Q8_0 = Boonie's deployment quant (TUF; spills a little VRAM, quality first).
-# Q5_K_M = the smaller sibling (fallback / faster option) from the same merge.
-print("[export] producing GGUF Q8_0 + Q5_K_M for KoboldCPP…")
+# Q8_0 = master/deployment quant (TUF; spills a little VRAM, quality first).
+# Q6_K = the smaller sibling from the same merge — kept at Q6+ deliberately,
+# not Q5, per the "don't go below Q6 for agentic tasks" floor. Also
+# reproducible later via `llama-quantize --allow-requantize` from the Q8_0
+# alone, so this export isn't the only way to get it if a run is misconfigured.
+print("[export] producing GGUF Q8_0 + Q6_K for KoboldCPP…")
 model.save_pretrained_gguf(f"{OUTPUT}/gguf", tokenizer,
-                           quantization_method=["q8_0", "q5_k_m"])
+                           quantization_method=["q8_0", "q6_k"])
 print(f"[done] GGUFs at {OUTPUT}/gguf/")
