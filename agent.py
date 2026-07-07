@@ -421,7 +421,7 @@ class Agent:
 
             eff = _effective_command(command, root)
             if body.strip():
-                self._log.command(f"[block] {eff}")
+                self._log.command(f"[body] {eff}")
                 result = self._dispatch.dispatch_block(eff, body)
             else:
                 self._log.command(eff)

@@ -235,7 +235,7 @@ class CommandDispatcher:
         """
         parts = line.split(None, 1)
         if not parts:
-            return "[block] Empty — put the command on the first line inside the block."
+            return "[body] Empty command — your tool call needs a non-empty \"command\" argument alongside the body."
         cmd  = parts[0].lower()
         rest = parts[1] if len(parts) > 1 else ""
 
@@ -275,7 +275,7 @@ class CommandDispatcher:
                 return begin  # begin failed (bad path / file not found)
             if not body.strip():
                 self.pending = None
-                return f"[block] {cmd} needs its content in the body."
+                return f"[body] {cmd} needs its content in the \"body\" field."
             last = begin
             for ln in body.rstrip("\n").splitlines():
                 last = self.handle_pending_input(ln)
@@ -301,11 +301,11 @@ class CommandDispatcher:
         stripped = line.strip()
         if stripped and not stripped.startswith("/"):
             return (
-                "[block] Missing prefix — did you forget `$` or `#`? "
+                "[body] Missing prefix — did you forget `$` or `#`? "
                 "Use `$ <cmd>` to run as user, `# <cmd>` to run as root, "
                 "or `/command` for harness commands."
             )
-        return "[block] Command not recognised."
+        return "[body] Command not recognised."
 
     def _mb_block(self, rest: str, body: str) -> str:
         """Handle /mb commands that arrived with a multiline body."""
@@ -377,7 +377,7 @@ class CommandDispatcher:
             fname_ref = os.path.join("/tmp", os.path.basename(fname_host)) if self._chroot else fname_host
             actual = f"{prefix} bash {shlex.quote(fname_ref)}"
         try:
-            return self.dispatch(actual) or "[block] Shell block executed."
+            return self.dispatch(actual) or "[body] Shell command executed."
         finally:
             try:
                 os.unlink(fname_host)
