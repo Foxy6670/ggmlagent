@@ -68,6 +68,13 @@ LR          = 2e-4
 # default behavior (local save only) is unchanged.
 HF_PUSH_REPO = os.environ.get("HF_PUSH_REPO", "")
 
+# Separate opt-in: only fires if the HF push above actually happened (nothing
+# to disconnect-after otherwise), so pushing to HF for other reasons doesn't
+# surprise-kill your session. Not the default even with HF_PUSH_REPO set --
+# some runs you'll want to stay up to look at the loss curve.
+#   HF_PUSH_REPO=... AUTO_DISCONNECT=1 python train_boonie_v3.py
+AUTO_DISCONNECT = os.environ.get("AUTO_DISCONNECT", "") == "1"
+
 # ─── load base + attach LoRA ───────────────────────────────────────────
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name     = MODEL,
@@ -218,3 +225,11 @@ if HF_PUSH_REPO:
     print(f"[done] pushed to https://huggingface.co/{HF_PUSH_REPO} — "
           f"safe to disconnect this Colab session now; pull down to the TUF "
           f"with: huggingface-cli download {HF_PUSH_REPO} --local-dir <dir>")
+
+    if AUTO_DISCONNECT:
+        try:
+            from google.colab import runtime
+            print("[export] AUTO_DISCONNECT=1 — marking runtime for deletion now.")
+            runtime.unassign()
+        except ImportError:
+            print("[export] AUTO_DISCONNECT=1 but not running in Colab — skipping.")
