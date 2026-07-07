@@ -8,6 +8,7 @@ Rate limits:
 """
 
 import re
+import subprocess
 import time
 import requests
 from config import SOCKS5_PROXY
@@ -17,6 +18,7 @@ _SEARCH_URL = "https://html.duckduckgo.com/html/"
 
 _SEARCH_INTERVAL = 60.0
 _FETCH_INTERVAL  = 5.0
+_FETCH_TIMEOUT   = 25.0  # lynx -dump wall-clock cap
 
 _last_search: float = 0.0
 _last_fetch:  float = 0.0
@@ -90,7 +92,13 @@ def search(query: str) -> str:
 
 def fetch(url: str) -> str:
     """
-    Fetch a URL over Tor and return plain text.
+    Fetch a URL over Tor via `lynx -dump` and return plain text.
+
+    lynx does real HTML parsing (proper redirect-following, e.g. apex->www),
+    and numbers every link inline with a References list at the end — unlike
+    the old requests+regex strip, hrefs survive instead of being discarded,
+    so the model can actually see where a page's links go, not just their
+    anchor text. Routed through torsocks for the same Tor path `search()` uses.
     Soft rate-limited to 1 call per 5 s.
     """
     global _last_fetch
@@ -100,19 +108,24 @@ def fetch(url: str) -> str:
         return f"[web] Fetch rate-limited. Try again in {remaining:.1f}s."
 
     try:
-        s = _proxy_session()
-        resp = s.get(url, timeout=20, allow_redirects=True)
-        resp.raise_for_status()
-    except Exception as e:
-        return f"[web] Fetch failed: {e}"
+        proc = subprocess.run(
+            ["torsocks", "lynx", "-dump", "-accept_all_cookies", "-width=100", url],
+            capture_output=True, text=True, timeout=_FETCH_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return f"[web] Fetch timed out after {_FETCH_TIMEOUT:.0f}s."
+    except FileNotFoundError as e:
+        return f"[web] Fetch failed: {e} (is lynx/torsocks installed?)"
     finally:
         _last_fetch = time.monotonic()
 
-    content_type = resp.headers.get("Content-Type", "")
-    if "text/html" in content_type or "text/plain" in content_type:
-        text = _strip_html(resp.text) if "html" in content_type else resp.text
-    else:
-        return f"[web] Unsupported content type: {content_type}"
+    if proc.returncode != 0:
+        err = (proc.stderr or "").strip() or f"lynx exited {proc.returncode}"
+        return f"[web] Fetch failed: {err}"
+
+    text = proc.stdout.strip()
+    if not text:
+        return f"[web] Fetch returned no content for {url}."
 
     if len(text) > _MAX_PAGE_CHARS:
         text = text[:_MAX_PAGE_CHARS] + "\n\n[...content capped at safety limit]"
