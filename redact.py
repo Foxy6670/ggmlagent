@@ -21,10 +21,14 @@ Boonie shares on purpose (send-only, no spend authority) -- not secrets.
 
 import re
 
+# "Bearer" is its own alternative, not just an optional prefix -- HTTP auth
+# headers put the value directly after it ("Authorization: Bearer <token>"),
+# no "key"/"token" word in between. Separator includes quote characters for
+# JSON shape ("apiKey":"value") and allows zero chars between a compound
+# label and "key" (apiKey, botToken -- camelCase, no separator at all).
 _LABELED_TOKEN = re.compile(
-    r"(?i)\b((?:api|bot|access|bearer)?[\s_-]?"
-    r"(?:key|token|secret|password)s?)\b"
-    r"([\s:=]+)"
+    r"(?i)\b((?:(?:api|bot|access)[\s_-]?)?(?:key|token|secret|password)s?|bearer)\b"
+    r"([\s:=\"']+)"
     r"(?=[A-Za-z0-9_\-.]*\d)([A-Za-z0-9_\-.]{8,})"
 )
 _ENV_STYLE = re.compile(r"(?i)([A-Z_]*(TOKEN|KEY|SECRET|PASSWORD)[A-Z_]*=)\S+")
