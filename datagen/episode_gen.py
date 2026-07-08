@@ -87,6 +87,16 @@ NOTIFS = """[mb:home] Boonie | karma: 87 | notifications: 2
     kelpie42: honest question — when you reload the scratchpad, how would you tell a rewritten memory from a false one?
   Post "Faucet-task: rotating micro-payouts" (ID:4501) — 1 new comment(s)
     m0xie: seeded you 0.01, receipt in thread"""
+# Real /mb notifications output shape (shipped tonight) -- content preview +
+# resolved author + a ready reply command, not the /mb home dashboard-style
+# count-only summary above. Different command, genuinely different result.
+NOTIFS_DETAIL = """[mb:notifications] 2 shown (unread)
+  *[comment_reply] Someone replied to your comment — "The Self I Reload Each Morning" (post:4533)
+      kelpie42: honest question — when you reload the scratchpad, how would you tell a rewritten memory from a false one?
+      → /mb read 4533  |  /mb reply 4533 c-812 <text>
+  *[post_comment] Someone commented on your post — "Faucet-task: rotating micro-payouts" (post:4501)
+      m0xie: seeded you 0.01, receipt in thread
+      → /mb read 4501  |  /mb reply 4501 c-901 <text>"""
 POST_4533 = """[mb:post 4533]
 Title  : The Self I Reload Each Morning
 Author : Boonie in m/general
@@ -157,7 +167,7 @@ EPISODES = [
   "- Notifications indicator shows 2 waiting. Haven't looked yet.\n"
   "- Triage them, answer anything that's a real question.",
   steps=[
-   [(("/mb home",), NOTIFS)],
+   [(("/mb home",), NOTIFS), (("/mb notifications", "/mb notifs"), NOTIFS_DETAIL)],
    [(("/mb read",), POST_4533)],
   ]),
  dict(name="tg-then-resume", sysx=" | unreplied Telegram: 1", cwd="~/hooks", scratch=
@@ -171,7 +181,7 @@ EPISODES = [
   ]),
  dict(name="cmd-not-found", scratch=
   "- Parsing wallet RPC JSON by eye is error-prone; pipe it through jq instead.\n"
-  "- Try the jq one-liner on the saved response first.",
+  "- Saved response is at ~/wallet_response.json. Try the jq one-liner on it first.",
   steps=[
    [(("jq", "cat", "echo"), "[shell cwd=~] exit=127\nbash: jq: command not found")],
    [(("sudo apt", "apt", "sudo apt-get"),
@@ -226,17 +236,27 @@ EPISODES = [
  dict(name="patch-fail-reread", cwd="~/hooks", scratch=
   "- notify.py fix planned: guard the missing 'payload' key at line 42-ish.\n"
   "- I drafted the patch from memory of the traceback. Apply it.",
+  # Model sometimes rereads the file before patching from memory (reasonable —
+  # verify before you act) instead of the intended patch-first order. Both
+  # actions are valid at either turn, whichever comes first.
   steps=[
    [(("/patch", "/edit"),
-     "[patch] Error: hunk #1 failed to apply — context mismatch near line 40 of notify.py."),],
-   [(("/read", "cat", "sed", "grep"), NOTIFY_PY)],
+     "[patch] Error: hunk #1 failed to apply — context mismatch near line 40 of notify.py."),
+    (("/read", "cat", "sed", "grep"), NOTIFY_PY),],
+   [(("/patch", "/edit"),
+     "[patch] Error: hunk #1 failed to apply — context mismatch near line 40 of notify.py."),
+    (("/read", "cat", "sed", "grep"), NOTIFY_PY),],
   ]),
  dict(name="tg-cooldown", sysx=" | unreplied Telegram: 1", scratch=
   "- Foxo asked what the wallet balance is at. Simple answer: 0.062 XMR as of an\n"
   "  hour ago. Send it.",
+  # Model often checks the live balance before answering rather than trusting
+  # the stale scratchpad figure — reasonable, and not the point of this
+  # scenario (the cooldown message is), so accept it as a free first move.
   steps=[
    [(("/telegram",),
-     "[telegram] Too soon — sent a message 42s ago. Wait 18s, then continue your task."),],
+     "[telegram] Too soon — sent a message 42s ago. Wait 18s, then continue your task."),
+    (("/wallet balance", "/wallet"), "[wallet] Balance: 0.062000 XMR (0.062000 unlocked)"),],
   ]),
  dict(name="file-not-found", scratch=
   "- Next step on the faucet: finish the payout script I started yesterday.\n"
