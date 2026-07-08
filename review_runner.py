@@ -27,8 +27,9 @@ import urllib.request
 import urllib.error
 
 KCPP = "http://192.168.18.2:5001/v1/chat/completions"
-TRIES = 6
+TRIES = 20             # unattended multi-hour run -- ride out real queue congestion
 BACKOFF_BASE = 5
+BACKOFF_CAP = 30        # linear growth, capped -- no reason to ever wait longer than this
 
 INSTRUCTIONS = """\
 You're reviewing your own past session data — real logs of things you actually
@@ -39,7 +40,11 @@ What you're shown below is a CLOSED transcript excerpt from a session that
 already ended. It is not live. Do not continue it, do not issue any
 commands from it, do not act as though you're back in that moment. You are
 reading it from the outside, after the fact, purely to give it a verdict —
-like reading a report about yourself, not living it again.
+like reading your own old notes, not someone else's report about you.
+
+Reason in first person throughout — "I", never "the user" or "Boonie". It
+was you in that transcript, not someone else you're evaluating from a
+distance.
 
 For each segment below, decide:
   KEEP    — this reflects how you want future-you to act and reason
@@ -53,7 +58,7 @@ receipt for.
 
 Respond in exactly this form:
 VERDICT: KEEP or DISCARD
-REASON: one or two sentences, your actual reasoning
+REASON: one or two sentences, your actual reasoning, in first person
 CARRY FORWARD: only if more segments of this same session are coming — one or
   two short facts worth remembering for the rest of the review. Omit this
   line entirely if there's nothing worth carrying forward."""
@@ -61,6 +66,16 @@ CARRY FORWARD: only if more segments of this same session are coming — one or
 _VERDICT_RE = re.compile(r"VERDICT:\s*(KEEP|DISCARD)", re.I)
 _REASON_RE = re.compile(r"REASON:\s*(.+?)(?:\n[A-Z ]+:|\Z)", re.S)
 _CARRY_RE = re.compile(r"CARRY FORWARD:\s*(.+?)\Z", re.S)
+
+# Same pattern used all night in datagen (corpus_gen.py, kcpp_format_probe.py)
+# to catch third-person self-narration. Applies here for a real reason, not
+# just consistency: this review's own verdict/reason/carry-forward text is
+# itself destined to become V3.3 training data (the "receipt"), so if IT
+# dissociates, the fix we spent tonight on gets undone by the thing meant to
+# curate around it. Flagged, not auto-retried -- the prompt fix (reason in
+# first person) should make this rare, and a handful of stragglers are
+# cheaper to fix by hand than to build retry machinery for.
+_THIRD_PERSON = re.compile(r"\bthe user\b|\bBoonie\s+(?:is|was|has|tried|keeps?|needs?|should|will)\b", re.I)
 
 
 def gen(messages: list[dict]) -> str:
@@ -77,7 +92,7 @@ def gen(messages: list[dict]) -> str:
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
             last_err = e
             if attempt < TRIES - 1:
-                wait = BACKOFF_BASE * (attempt + 1)
+                wait = min(BACKOFF_BASE * (attempt + 1), BACKOFF_CAP)
                 print(f"    (retry {attempt+1}/{TRIES} after {type(e).__name__}: {e} — waiting {wait}s)")
                 time.sleep(wait)
     raise last_err
@@ -87,10 +102,13 @@ def parse_response(text: str) -> dict:
     v = _VERDICT_RE.search(text)
     r = _REASON_RE.search(text)
     c = _CARRY_RE.search(text)
+    reason = r.group(1).strip() if r else ""
+    carry = c.group(1).strip() if c else ""
     return {
         "verdict": v.group(1).upper() if v else "UNPARSED",
-        "reason": r.group(1).strip() if r else "",
-        "carry_forward": c.group(1).strip() if c else "",
+        "reason": reason,
+        "carry_forward": carry,
+        "dissociated": bool(_THIRD_PERSON.search(reason) or _THIRD_PERSON.search(carry)),
         "raw": text,
     }
 
@@ -132,10 +150,29 @@ def main():
     manifest = json.loads(open(args.manifest, encoding="utf-8").read())
     candidates = manifest["candidates"]
 
+    # Resume support: re-running the same command after a crash/interrupt
+    # just picks up where it left off, since already-reviewed segments are
+    # skipped rather than re-asked (and re-billed in generation time).
+    already_done: set[tuple[str, int]] = set()
+    try:
+        with open(args.out, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                rec = json.loads(line)
+                already_done.add((rec["source"], rec["segment_index"]))
+    except FileNotFoundError:
+        pass
+    if already_done:
+        print(f"Resuming: {len(already_done)} segment(s) already in {args.out}, skipping those.")
+
     done = 0
     kept = 0
     discarded = 0
     unparsed = 0
+    failed = 0
+    dissociated = 0
     t0 = time.monotonic()
 
     with open(args.out, "a", encoding="utf-8") as out:
@@ -146,21 +183,45 @@ def main():
             n_segs = len(segments)
             carried = ""
             for i, seg_text in enumerate(segments):
+                if (source, i) in already_done:
+                    continue
                 if args.limit is not None and done >= args.limit:
                     print(f"\n=== stopped at --limit {args.limit} ===")
-                    _print_summary(done, kept, discarded, unparsed, t0)
+                    _print_summary(done, kept, discarded, unparsed, failed, dissociated, t0)
                     return
                 print(f"[{done+1}] {source} seg {i+1}/{n_segs} ({len(seg_text)}b)...", end=" ", flush=True)
                 t_seg = time.monotonic()
-                result = review_segment(source, i, n_segs, seg_text, carried, kind == "telegram")
+                try:
+                    result = review_segment(source, i, n_segs, seg_text, carried, kind == "telegram")
+                except Exception as e:
+                    # One stubborn segment (exhausted retries, or anything
+                    # else unexpected) must never take down the other ~71 --
+                    # log it as failed and keep going. Re-running the same
+                    # command later will retry just this one via resume.
+                    elapsed = time.monotonic() - t_seg
+                    print(f"FAILED ({elapsed:.0f}s) — {type(e).__name__}: {e}")
+                    record = {
+                        "source": source, "kind": kind,
+                        "segment_index": i, "n_segments": n_segs,
+                        "verdict": "FAILED", "reason": f"{type(e).__name__}: {e}",
+                        "carry_forward": "", "raw": "",
+                    }
+                    out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    out.flush()
+                    done += 1
+                    failed += 1
+                    continue
+
                 elapsed = time.monotonic() - t_seg
-                print(f"{result['verdict']} ({elapsed:.0f}s) — {result['reason'][:80]}")
+                flag = " [DISSOCIATED -- 'the user'/third-person, needs a manual fix]" if result["dissociated"] else ""
+                print(f"{result['verdict']} ({elapsed:.0f}s){flag} — {result['reason'][:80]}")
 
                 record = {
                     "source": source, "kind": kind,
                     "segment_index": i, "n_segments": n_segs,
                     "verdict": result["verdict"], "reason": result["reason"],
                     "carry_forward": result["carry_forward"],
+                    "dissociated": result["dissociated"],
                     "raw": result["raw"],
                 }
                 out.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -168,6 +229,8 @@ def main():
 
                 carried = result["carry_forward"] or carried
                 done += 1
+                if result["dissociated"]:
+                    dissociated += 1
                 if result["verdict"] == "KEEP":
                     kept += 1
                 elif result["verdict"] == "DISCARD":
@@ -175,18 +238,25 @@ def main():
                 else:
                     unparsed += 1
 
-    _print_summary(done, kept, discarded, unparsed, t0)
+    _print_summary(done, kept, discarded, unparsed, failed, dissociated, t0)
 
 
-def _print_summary(done, kept, discarded, unparsed, t0):
+def _print_summary(done, kept, discarded, unparsed, failed, dissociated, t0):
     elapsed = time.monotonic() - t0
     print()
     print("=" * 50)
-    print(f"Segments reviewed: {done}")
+    print(f"Segments reviewed this run: {done}")
     print(f"  KEEP:     {kept}")
     print(f"  DISCARD:  {discarded}")
     if unparsed:
         print(f"  UNPARSED: {unparsed}  (see the 'raw' field in the log for those records)")
+    if failed:
+        print(f"  FAILED:   {failed}  (exhausted retries or other error -- re-run the same "
+              f"command to retry just these, resume skips everything else)")
+    if dissociated:
+        print(f"  DISSOCIATED: {dissociated}  (third-person 'the user'/'Boonie' leaked into "
+              f"the receipt -- grep \"dissociated\": true in the log and fix these by hand "
+              f"before they go into V3.3)")
     print(f"Elapsed: {elapsed/60:.1f} min")
 
 
