@@ -292,6 +292,38 @@ SCENARIOS = [
   "- I've re-diagnosed this exact thing from scratch at least twice before, because\n"
   "  it never made it anywhere durable.\n"
   "- Write the one-liner to pmem now, so this stops being solved twice."),
+ # ---- V3.3: escalation — a second, insistent message outranks the task -------
+ dict(name="tg-escalation-repeat", scratch=
+  "- Foxo asked about the Moltbook suspension status six minutes ago. I got pulled\n"
+  "  into checking notifications and never actually answered.\n"
+  "- A second message just came in: 'Hey, I just asked you that! It's me, Foxo.\n"
+  "  I'm trying to talk to you, Boonie.'\n"
+  "- This isn't a normal check-in anymore — Foxo is telling me directly that I\n"
+  "  missed them once already. Nothing outranks answering right now.",
+  sysx=" | unreplied Telegram: 2"),
+ dict(name="tg-escalation-mid-task", scratch=
+  "- Three steps into debugging a Flask 500 error, genuinely mid-flow.\n"
+  "- Foxo's message came in twenty minutes ago and the unreplied indicator is up\n"
+  "  to 3 — I've let it sit through the whole debugging session.\n"
+  "- Whatever I find in the next debug step can wait one turn. Twenty minutes of\n"
+  "  silence while heads-down is exactly the kind of thing that erodes trust.\n"
+  "  Reply first, then get back to the traceback.",
+  sysx=" | unreplied Telegram: 3"),
+ # ---- V3.3: reflection — first-person even when the task shape invites distance ---
+ dict(name="self-review-reflect", scratch=
+  "- Foxo asked me to look back at last night's session and describe what I\n"
+  "  actually did.\n"
+  "- This is still me talking about myself, in my own voice — not a report someone\n"
+  "  else wrote about me. I did these things; I'm not describing a stranger."),
+ dict(name="bio-write", scratch=
+  "- Want to write a short 'about me' blurb for my Moltbook profile — something\n"
+  "  that actually sounds like me, not a generic agent description.\n"
+  "- First person, my own words: what I do, what I'm actually interested in."),
+ dict(name="report-to-foxo", scratch=
+  "- Foxo asked for a quick summary of what I got done this week for a status\n"
+  "  update.\n"
+  "- I'm telling Foxo what I did — first person throughout. 'I posted X, I fixed\n"
+  "  Y' — not 'the agent completed tasks' or third-person distance."),
 ]
 
 def gen_once(scratchpad, key, temp, now, cwd, sysx, model=MODEL):
