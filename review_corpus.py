@@ -33,8 +33,40 @@ _SEGMENT_TOKEN_BUDGET = 8000  # leaves real headroom for the review prompt +
                                # inside a 32k ctx / 6144 response reserve
 
 
+_BOILERPLATE_CHARS = 500  # the real harness system prompt is 1000+ words;
+                          # actual short system messages (timestamps, loop
+                          # guards) never get near this
+
+
+def _strip_boilerplate(messages: list[dict]) -> list[dict]:
+    """
+    The harness's own system prompt (tool docs, command syntax) is the
+    first message of every session, identical across all of them, and not
+    Boonie's behavior to judge -- but it's long enough to dominate segment
+    1 with nothing for the reviewer to actually decide on. Found by reading
+    real review output: 14 of 16 unparsed segments were specifically
+    segment 1, every one starting with this exact boilerplate. Collapsed
+    to a one-line placeholder; only the first message is a candidate (a
+    later, short system message -- a loop guard, a timestamp -- is real
+    signal and left untouched).
+    """
+    if not messages:
+        return messages
+    first = messages[0]
+    if first["role"] == "system" and len(first["content"]) > _BOILERPLATE_CHARS:
+        messages = list(messages)
+        messages[0] = {
+            "role": "system",
+            "content": "[harness system prompt -- fixed tool/command "
+                       "documentation, identical every session, not "
+                       "Boonie's behavior -- omitted here]",
+        }
+    return messages
+
+
 def render_session(messages: list[dict]) -> str:
     """Curated messages -> plain text, one block per turn."""
+    messages = _strip_boilerplate(messages)
     return "\n".join(f"[{m['role']}]\n{m['content']}\n" for m in messages)
 
 
@@ -116,6 +148,10 @@ def main():
         if curated is None:
             dropped += 1
             continue
+        # Strip before chunking, not just at render time -- otherwise segment
+        # 1's size accounting still reflects the un-stripped boilerplate and
+        # doesn't absorb the extra real turns the shrink actually freed up.
+        curated = _strip_boilerplate(curated)
         segs_msgs = chunk_by_turns(curated, budget_chars)
         segs_text = [render_session(s) for s in segs_msgs]
         candidates.append({
