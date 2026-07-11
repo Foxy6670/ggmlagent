@@ -11,9 +11,9 @@ Differences from train_boonie_14b.py (V2 era):
   * train_on_responses_only: loss lands ONLY on assistant turns — the corpus's
     tool-result messages are environment, not behavior; training on them
     teaches result-hallucination.
-  * Corpus: boonie_corpus.jsonl from datagen/export_v3.py (1101 samples,
-    ~714k tokens: <think> first-person deliberation + persistent working
-    prose + <tool_call>).
+  * Corpus: boonie_corpus.jsonl from datagen/export_v3.py — sample/token
+    counts grow across versions; check the [export] log line at generation
+    time for the current corpus's actual numbers.
 
 Before running:
   1. Upload boonie_corpus.jsonl via the Files panel -> /content/boonie_corpus.jsonl
